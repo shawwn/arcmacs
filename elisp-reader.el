@@ -404,7 +404,7 @@ character is encountered this will produce an error."
       ((eq ch ?\;)
        (er-skip-comment in)
        (er-read-datum in))
-      ((eq ch ?\")
+      ((eq ch ?\") ;"
        (er-read-string))
       ((eq ch ?\?)
        (er-read-char))
@@ -562,6 +562,12 @@ character is encountered this will produce an error."
 
           ((eq x ?\\)
            (er-read-literal in))
+
+          ((eq x ?t)
+           't)
+
+          ((eq x ?f)
+           'nil)
 
           (t
            (er-croak "Unsupported #%c syntax" x))))))
