@@ -388,6 +388,9 @@
 		  (with-current-buffer buffer
 		    (buffer-string))))
 
+(scm-def 'eval (lambda (x)
+                 (eval (scm x ()) t)))
+
 (scm-def 'string-replace! nil)
 
 (scm-def 'ar-tmpname nil)
