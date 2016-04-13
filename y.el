@@ -16,11 +16,12 @@
 	  (t (error "unknown char"))))
 
   (defun er-read-literal (in)
-    (let ((ch (er-next in)))
-      (if (and (scm-letterp ch) (scm-letterp (er-peek in)))
-	(progn (funcall in ch)
-	       (scm-char (er-read-symbol in)))
-	ch))))
+    (string
+      (let ((ch (er-next in)))
+	(if (and (scm-letterp ch) (scm-letterp (er-peek in)))
+	  (progn (funcall in ch)
+		 (scm-char (er-read-symbol in)))
+	  ch)))))
 
 (eval-and-compile
   (defun scm-global-name (s)
@@ -43,6 +44,12 @@
   (if (symbolp x) nil
     (functionp x)))
   
+(defun eqv-p (a b)
+  (or (eql a b)
+      (and (stringp a) (stringp b) (string= a b))
+      (and (not a) (not b))))
+
+(defun scm-string-ref (s i) (substring s i (+ i 1)))
 
 (defconst scm-symbols
   '(+ - / *
@@ -53,7 +60,8 @@
       if when unless
 
       (eq? . eq)
-      (eqv? . eql)
+      ;; (eqv? . eql)
+      (eqv? . eqv-p)
       (equal? . equal)
       (begin . progn)
 
@@ -74,7 +82,8 @@
       (string>? . string>)
       (string-length . length)
       (string-append . concat)
-      (string-ref . elt)
+      ;; (string-ref . elt)
+      (string-ref . scm-string-ref)
       (string-set! . store-substring)
       (string-copy . copy-sequence)
 
@@ -165,11 +174,11 @@
 
 (defun scm-inner (s) (substring s 1 -1))
 
-(defun scm-id-literal-p (x) (and (symbolp x) (eq #\| (elt (symbol-name x) 0))))
+(defun scm-id-literal-p (x) (and (symbolp x) (eqv-p #\| (scm-string-ref (symbol-name x) 0))))
 
 (defun scm (s env)
   (cond ((scm-literalp s) s)
-	((scm-id-literal-p s) `',(intern (scm-inner (symbol-name s))))
+	((scm-id-literal-p s) (intern (scm-inner (symbol-name s))))
 	((symbolp s) (scm-var-ref s env))
 	((eq (car-safe s) 'quote)
 	 (let ((x (cadr s)))
@@ -348,12 +357,13 @@
 	(i 0)
 	(n (length s)))
     (while (< i n)
-      (push (elt s i) l)
+      (push (string-ref s i) l)
       (setq i (+ i 1)))
     (reverse l))))
 
 (scm-def 'list->string (lambda (l)
-  (apply 'string l)))
+  ;; (apply 'string l)))
+  (apply 'concat l)))
 
 (scm-def 'ac-nameit (lambda (name v)
   (if (and (not (null name)) (symbolp name))
@@ -361,10 +371,14 @@
         (list 'let `((,n ,v)) n))
       v)))
 
-(ac-def 'writec (scm-ref 'write-char))
+;; (ac-def 'writec (scm-ref 'write-char))
+(ac-def 'writec (scm-ref 'princ))
 (ac-def 'write (scm-ref 'prin1))
 (ac-def 'disp (scm-ref 'princ))
 (ac-def 'stderr (lambda () 'nil))
+(ac-def 'inside (lambda (buffer)
+		  (with-current-buffer buffer
+		    (buffer-string))))
 
 (scm-def 'string-replace! nil)
 
@@ -1983,8 +1997,7 @@
                     `(do (if (bound ',var)
                              (do (disp "*** redefining " (stderr))
                                  (disp ',var (stderr))
-                                 ;; (disp #\newline (stderr))))
-                                 (writec #\newline (stderr))))
+                                 (disp #\newline (stderr))))
                          (assign ,var ,val)))))
 
 (assign def (annotate 'mac
@@ -4021,6 +4034,8 @@
   (setq max-specpdl-size (* 1335 10))
   (eval (scm scm-ac ()) t)
   (arc-eval* scm-arc))
+
+;; (arc (lines "foo\nbar"))
 
 ;; (arc ("oooz" 2))
 
