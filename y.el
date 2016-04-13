@@ -482,28 +482,6 @@
 ;; 		    ,update
 ;; 		    (|setq| ,gparm ,test))))))
 
-(defmacro y-test= (a b)
-  `(if (not (equal ,a ,b)) (error (format "Expected %S, got %S" ,a ,b))))
-
-(defun y-run-tests ()
-  (y-test= t #t)
-  (y-test= nil #f)
-  ;; (y-test= ?\n #\newline)
-  ;; (y-test= ?\r #\return)
-  ;; (y-test= ?\  #\space)
-  ;; (y-test= ?\t #\tab)
-  (y-test= "\n" #\newline)
-  (y-test= "\r" #\return)
-  (y-test= " " #\space)
-  (y-test= "\t" #\tab)
-  (y-test= 'foo (eval (scm '(read-from-string "foo") ())))
-  (y-test= '((b ((c)))) (eval (scm '(cadar '((a ((b ((c))))))) ())))
-  (y-test= 1 (eval (scm '((lambda (x) (+ x 1)) 0) '())))
-  )
-
-(defun y-run-benchmarks ()
-  nil)
-
 (defconst scm-ac '
 (module ac mzscheme
 
@@ -4055,19 +4033,39 @@
 ;; (defun arc-eval* (body)
 ;;   (arc-eval `(do ,@body)))
 
-
 (progn
   (setq max-lisp-eval-depth (* 1335 10))
   (setq max-specpdl-size (* 1335 10))
   (eval (scm scm-ac ()) t)
   (arc-eval* scm-arc))
 
-;; (arc (lines "foo\nbar"))
-
-;; (arc ("oooz" 2))
-
-
-
 ;; (arc (|goto-char| (|point-min|)))
 ;; (arc (time (|buffer-substring| (- (|point|) 200) (|point-max|))))
 
+(defmacro y-test= (a b)
+  `(if (not (equal ,a ,b)) (error (format "Expected %S, got %S" ,a ,b)) t))
+
+(defmacro arc-test= (a b)
+  `(y-test= ,a (arc-eval ',b)))
+
+(defun y-run-tests ()
+  (y-test= t #t)
+  (y-test= nil #f)
+  (y-test= "\n" #\newline)
+  (y-test= "\r" #\return)
+  (y-test= " " #\space)
+  (y-test= "\t" #\tab)
+  (y-test= 'foo (eval (scm '(read-from-string "foo") ())))
+  (y-test= '((b ((c)))) (eval (scm '(cadar '((a ((b ((c))))))) ())))
+  (y-test= 1 (eval (scm '((lambda (x) (+ x 1)) 0) '())))
+  (y-test= t (arc-eval '(headmatch "a" "abc")))
+  (y-test= nil (arc-eval '(headmatch "b" "abc")))
+  (arc-test= 0 (posmatch "a" "abc"))
+  (arc-test= 2 (posmatch "c" "abc"))
+  (arc-test= '("foo" "bar") (lines "foo\nbar"))
+  (arc-test= "b" ("abc" 1))
+  (princ "Tests completed without errors\n")
+  )
+
+(defun y-run-benchmarks ()
+  nil)
