@@ -51,6 +51,15 @@
 
 (defun scm-string-ref (s i) (substring s i (+ i 1)))
 
+(require 'calc-bin)
+(defun scm-number-to-string (n &optional base)
+  (let ((calc-number-radix (or base 10)))
+    (math-format-radix n)))
+
+(defun scm-string> (a b)
+  (and (not (string= a b))
+       (not (string< a b))))
+
 (defconst scm-symbols
   '(+ - / *
       < <= = >= >
@@ -79,7 +88,7 @@
 
       (string=? . string=)
       (string<? . string<)
-      (string>? . string>)
+      (string>? . scm-string>)
       (string-length . length)
       (string-append . concat)
       ;; (string-ref . elt)
@@ -97,7 +106,7 @@
 
       (string->symbol . intern)
       (symbol->string . symbol-name)
-      (number->string . number-to-string)
+      (number->string . scm-number-to-string)
       (string->number . string-to-number)
 
       (iround . round)
@@ -197,8 +206,6 @@
 	((scm-shadow-p s env) (scm-shadow s env))
 	((consp s) (scm-call (car s) (cdr s) env))
 	(t (error "Bad object in expression"))))
-
-;; (scm '(|point-max|) ())
 
 (defun scm-sym (x env)
   (let ((f (scm x env)))
@@ -357,7 +364,7 @@
 	(i 0)
 	(n (length s)))
     (while (< i n)
-      (push (string-ref s i) l)
+      (push (scm-string-ref s i) l)
       (setq i (+ i 1)))
     (reverse l))))
 
@@ -371,6 +378,7 @@
         (list 'let `((,n ,v)) n))
       v)))
 
+(ac-def 'emacs* t)
 ;; (ac-def 'writec (scm-ref 'write-char))
 (ac-def 'writec (scm-ref 'princ))
 (ac-def 'write (scm-ref 'prin1))
@@ -415,6 +423,10 @@
 
 (ac-def '/ (lambda (x y) (/ x (float y))))
 
+; gigantic hack
+(ac-def '1/2 0.5)
+(ac-def '1/100 (/ 1.0 100.0))
+
 (ac-def 'atomic-invoke
   (lambda (f) (funcall f)))
 
@@ -427,7 +439,8 @@
 
 (ac-def 'trunc (scm-ref 'truncate))
 
-(ac-def 'newstring (lambda (n) (make-string n ?\0)))
+(ac-def 'newstring (lambda (n &optional c)
+		     (make-string n (or (if (stringp c) (string-to-char c) c) ?\0))))
 
 (ac-def 'details
   (lambda (c)
@@ -475,10 +488,14 @@
 (defun y-run-tests ()
   (y-test= t #t)
   (y-test= nil #f)
-  (y-test= ?\n #\newline)
-  (y-test= ?\r #\return)
-  (y-test= ?\  #\space)
-  (y-test= ?\t #\tab)
+  ;; (y-test= ?\n #\newline)
+  ;; (y-test= ?\r #\return)
+  ;; (y-test= ?\  #\space)
+  ;; (y-test= ?\t #\tab)
+  (y-test= "\n" #\newline)
+  (y-test= "\r" #\return)
+  (y-test= " " #\space)
+  (y-test= "\t" #\tab)
   (y-test= 'foo (eval (scm '(read-from-string "foo") ())))
   (y-test= '((b ((c)))) (eval (scm '(cadar '((a ((b ((c))))))) ())))
   (y-test= 1 (eval (scm '((lambda (x) (+ x 1)) 0) '())))
@@ -2769,11 +2786,14 @@
 (mac w/stdin (str . body)
   `(call-w/stdin ,str (fn () ,@body)))
 
+(if emacs*
+    (mac tostring body
+      `(|with-output-to-string| ,@body))
 (mac tostring body
   (w/uniq gv
-   `(w/outstring ,gv
-      (w/stdout ,gv ,@body)
-      (inside ,gv))))
+    `(w/outstring ,gv
+       (w/stdout ,gv ,@body)
+       (inside ,gv)))))
 
 (mac fromstring (str . body)
   (w/uniq gv
@@ -3474,11 +3494,18 @@
        (prn)
        (flushout))))
 
-(mac point (name . body)
-  (w/uniq (g p)
-    `(ccc (fn (,g)
-            (let ,name (fn ((o ,p)) (,g ,p))
-              ,@body)))))
+(if emacs*
+    (mac point (name . body)
+      `(|catch| ',name
+                (let ,name (fn (x) (|throw| ',name x))
+                     ,@body)))
+
+  (mac point (name . body)
+    (w/uniq (g p)
+      `(ccc (fn (,g)
+              (let ,name (fn ((o ,p)) (,g ,p))
+                   ,@body)))))
+  )
 
 (mac catch body
   `(point throw ,@body))

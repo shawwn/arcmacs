@@ -238,6 +238,7 @@ true."
 
 (defun er-croak (msg &rest args)
   "Error out in case of parse error."
+  ;; TODO: throw a scan-error.
   (if args
       (apply #'error msg args)
     (error "%s" msg)))
