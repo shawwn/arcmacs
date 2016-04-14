@@ -6,7 +6,7 @@
   (require 'cl)
   (require 'elisp-reader)
 
-  (defun scm-letterp (c) (or (<= ?a c ?z) (<= ?A c ?Z)))
+  (defun scm-letterp (c) (and c (or (<= ?a c ?z) (<= ?A c ?Z))))
 
   (defun scm-char (s)
     (cond ((eql s 'newline) ?\n)
@@ -378,6 +378,11 @@
         (list 'let `((,n ,v)) n))
       v)))
 
+(scm-def 'display (scm-ref 'princ))
+(scm-def 'newline (scm-ref 'terpri))
+(scm-def 'read (lambda () (er-read (read-string ""))))
+(scm-def 'write (scm-ref 'prin1))
+
 (ac-def 'emacs* t)
 ;; (ac-def 'writec (scm-ref 'write-char))
 (ac-def 'writec (scm-ref 'princ))
@@ -445,9 +450,7 @@
 (ac-def 'newstring (lambda (n &optional c)
 		     (make-string n (or (if (stringp c) (string-to-char c) c) ?\0))))
 
-(ac-def 'details
-  (lambda (c)
-    (error-message-string c)))
+(scm-def 'exn-message (scm-ref 'error-message-string))
 
 (scm-def 'disp-to-string
   (lambda (x)
@@ -475,15 +478,6 @@
 
 (let ((time (current-time)))
   (scm-def 'current-milliseconds (lambda () (* 1000.0 (float-time (time-since time))))))
-
-;; (mac loop (start test update . body)
-;;   (w/uniq (gfn gparm)
-;;     `(do ,start
-;; 	 (let ,gparm ,test
-;; 	   (|while| ,gparm
-;; 		    ,@body
-;; 		    ,update
-;; 		    (|setq| ,gparm ,test))))))
 
 (defconst scm-ac '
 (module ac mzscheme
@@ -547,6 +541,7 @@
       (char? x)
       (string? x)
       (number? x)
+      (id-literal? x)
       (eq? x '())))
 
 (define (ssyntax? x)
@@ -2018,10 +2013,13 @@
 
 ; (def list args args)
 
+(if emacs* (def copylist (xs) (|copy-sequence| xs))
+
 (def copylist (xs)
   (if (no xs) 
       nil 
       (cons (car xs) (copylist (cdr xs)))))
+)
 
 (def list args (copylist args))
 
@@ -2117,12 +2115,15 @@
   (let g (uniq)
     `(fn ,g (no (apply ,f ,g)))))
 
+(if emacs* (def rev (xs) (|reverse| xs))
+
 (def rev (xs) 
   ((afn (xs acc)
      (if (no xs)
          acc
          (self (cdr xs) (cons (car xs) acc))))
    xs nil))
+)
 
 (def isnt (x y) (no (is x y)))
 
@@ -2161,19 +2162,26 @@
 (mac unless (test . body)
   `(if (no ,test) (do ,@body)))
 
+(if emacs* (mac while (test . body) `(|while| ,test ,@body))
+
 (mac while (test . body)
   (w/uniq (gf gp)
     `((rfn ,gf (,gp)
         (when ,gp ,@body (,gf ,test)))
       ,test)))
+)
 
 (def empty (seq) 
   (or (no seq) 
       (and (or (is (type seq) 'string) (is (type seq) 'table))
            (is (len seq) 0))))
 
+(if emacs* (def reclist (f xs) (|catch| 'ret (while xs (let x (f xs) (if x (|throw| 'ret x) (assign xs (cdr xs)))))))
+;; (if emacs* (def reclist (f xs) (|-find| f xs))
+
 (def reclist (f xs)
   (and xs (or (f xs) (reclist f (cdr xs)))))
+)
 
 (def recstring (test s (o start 0))
   ((afn (i)
@@ -2406,18 +2414,28 @@
 (mac = args
   (expand=list args))
 
-(mac loop (start test update . body)
-  (w/uniq (gfn gparm)
-    `(do ,start
-         ((rfn ,gfn (,gparm) 
-            (if ,gparm
-                (do ,@body ,update (,gfn ,test))))
-          ,test))))
+(if emacs*
+    (mac loop (start test update . body)
+      (w/uniq (gfn gparm)
+        `(do ,start
+             (let ,gparm ,test
+               (|while| ,gparm
+                        ,@body
+                        ,update
+                        (|setq| ,gparm ,test))))))
+    (mac loop (start test update . body)
+      (w/uniq (gfn gparm)
+        `(do ,start
+             ((rfn ,gfn (,gparm) 
+                (if ,gparm
+                    (do ,@body ,update (,gfn ,test))))
+              ,test))))
+)
 
 (mac for (v init max . body)
   (w/uniq (gi gm)
-    `(with (,v nil ,gi ,init ,gm (+ ,max 1))
-       (loop (assign ,v ,gi) (< ,v ,gm) (assign ,v (+ ,v 1))
+    `(with (,v nil ,gi ,init ,gm (,(if emacs* '|+| '+) ,max 1))
+       (loop (assign ,v ,gi) (,(if emacs* '|<| '<) ,v ,gm) (assign ,v (,(if emacs* '|+| '+) ,v 1))
          ,@body))))
 
 (mac down (v init min . body)
@@ -2426,8 +2444,14 @@
        (loop (assign ,v ,gi) (> ,v ,gm) (assign ,v (- ,v 1))
          ,@body))))
 
+(if emacs* (mac repeat (n . body) (w/uniq (gi gn)
+                                    `(with (,gi 0 ,gn ,n)
+                                           (|while| (|<| ,gi ,gn) ,@body (|setq| ,gi (|+| ,gi 1))))))
+             ;; `((|-dotimes| ,n [do ,@body]))
+
 (mac repeat (n . body)
   `(for ,(uniq) 1 ,n ,@body))
+)
 
 ; could bind index instead of gensym
 
@@ -3106,6 +3130,8 @@
 ; Destructive stable merge-sort, adapted from slib and improved 
 ; by Eli Barzilay for MzLib; re-written in Arc.
 
+(if emacs* (def mergesort (less? lst) (|sort| lst less?))
+      
 (def mergesort (less? lst)
   (with (n (len lst))
     (if (<= n 1) lst
@@ -3139,6 +3165,7 @@
                   p)
                nil))
          n))))
+)
 
 ; Also by Eli.
 
@@ -4024,6 +4051,9 @@
 			   (scm (ac x ()) ()))) t))) body)
     r))
 
+(defun scm-eval (x)
+  (eval (scm x ()) t))
+
 (defun arc-eval (x)
   (arc-eval* (list x)))
   
@@ -4041,6 +4071,10 @@
   (setq max-specpdl-size (* 1335 10))
   (eval (scm scm-ac ()) t)
   (arc-eval* scm-arc))
+
+(defun arc-tle () (scm-eval '(tle)))
+
+(defun arc-tl () (scm-eval '(tl)))
 
 ;; (arc (|goto-char| (|point-min|)))
 ;; (arc (time (|buffer-substring| (- (|point|) 200) (|point-max|))))
