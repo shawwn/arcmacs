@@ -3,7 +3,7 @@
 This is an (incomplete) implementation of Paul Graham's Arc in Emacs
 Lisp. Since Arc was written in Scheme, the most straightforward way
 to do this was to create a Scheme-to-Elisp compiler and then run
-the original Arc compiler.
+the original `ac.scm` compiler directly in elisp.
 
 # Install
 
