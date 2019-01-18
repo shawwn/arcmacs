@@ -1,6 +1,7 @@
 ;;; -*- lexical-binding: t -*-
 
-(setq lexical-binding t)
+(eval-and-compile
+  (setq-local lexical-binding t))
 
 (eval-and-compile
   (require 'cl)
@@ -32,8 +33,14 @@
 		  x
 		(concat "^" x)))))
 
+  (defun ac-inner (s) (substring s 1 -1))
+
+  (defun ac-id-literal-p (x) (and (symbolp x) (eq ?\| (string-to-char (symbol-name x)))))
+
   (defun ac-global-name (x)
-    (intern (concat "." (symbol-name x)))))
+    (intern (if (ac-id-literal-p x)
+                (ac-inner (symbol-name x))
+                (concat "." (symbol-name x))))))
 
 (defconst scm-noop
   '(provide require unsafe! print-hash-table putenv define-syntax))
@@ -41,7 +48,8 @@
 (defconst scm-defs '())
 
 (defun fn-p (x)
-  (if (symbolp x) nil
+  (if (symbolp x)
+      nil
     (functionp x)))
   
 (defun eqv-p (a b)
@@ -378,9 +386,21 @@
         (list 'let `((,n ,v)) n))
       v)))
 
+(defconst ar-eof (make-hash-table))
+
+(defun ar-eof-object-p (x)
+  (eq x ar-eof))
+
+(defun ar-read (&rest args)
+  (or (ignore-errors (er-read (read-string "")))
+      ar-eof))
+
+(scm-def 'eof ar-eof)
+(scm-def 'eof-object? #'ar-eof-object-p)
+
 (scm-def 'display (scm-ref 'princ))
 (scm-def 'newline (scm-ref 'terpri))
-(scm-def 'read (lambda () (er-read (read-string ""))))
+(scm-def 'read #'ar-read)
 (scm-def 'write (scm-ref 'prin1))
 
 (ac-def 'emacs* t)
@@ -474,12 +494,10 @@
 (scm-def 'directory-exists? (scm-ref 'file-accessible-directory-p))
 (scm-def 'delete-file (scm-ref 'delete-file))
 (scm-def 'substring (scm-ref 'substring))
-
-
 (let ((time (current-time)))
   (scm-def 'current-milliseconds (lambda () (* 1000.0 (float-time (time-since time))))))
 
-(defconst scm-ac '
+(defconst scheme-expressions '
 (module ac mzscheme
 
 (provide (all-defined))
@@ -1693,6 +1711,7 @@
 
 (xdef eval (lambda (e)
               (eval (ac (ac-denil e) '()))))
+(xdef seval eval)
 
 ; If an err occurs in an on-err expr, no val is returned and code
 ; after it doesn't get executed.  Not quite what I had in mind.
@@ -1980,7 +1999,7 @@
 ;; 		 (if (vectorp s) (ac `(fn (_) ,(append s nil)) env)
 ;; 		   (ac1 s env)))))
 
-(defconst scm-arc '(
+(defconst arc-expressions '(
 
 (assign do (annotate 'mac
              (fn args `((fn () ,@args)))))
@@ -4025,59 +4044,96 @@
 
 
 
-
 ))
 
-(defun prn (&rest xs)
+(defun y-prn (&rest xs)
   (princ (format "%S" xs))
   (terpri)
   (car xs))
 
-(defun ac-1 (x) (scm (ac x ()) ()))
-(defun ac-1* (x) (scm (ac x ()) ()))
+(defun y-complain (why?)
+  (let ((msg nil) (error? t))
+    (cond ((eq why? 'lexical-binding)
+           (setq msg "LEXICAL-BINDING was nil. You can add
+;;; -*- lexical-binding: t -*-
+to the top of the current file.
 
-(defun rearc ()
-  (eval `(progn ,@(mapcar 'ac-1* scm-arc)) t))
+If you're in a scratch buffer, you can run (setq-local lexical-binding t)
 
-;; (rearc)
+"))
+          (t (setq msg (concat "Internal error: Unknown complaint '"
+                               (symbol-name why?)))))
+    (if error?
+        (error msg)
+      (warn msg))))
 
-(defun arc-eval* (body)
-  (let (r
-	(lexical-binding t))
-    (mapc (lambda (x)
-	    (setq r (eval
-		     `(let ((lexical-binding t))
-			,(progn ;nrn
-			   (scm (ac x ()) ()))) t))) body)
-    r))
+(defun scheme-expand (x)
+  (scm x ()))
 
-(defun scm-eval (x)
-  (eval (scm x ()) t))
+(defun arc-expand* (x)
+  (ac x ()))
+
+(defun arc-expand (x)
+  (scm (ac x ()) ()))
+
+(defun scheme-eval (x)
+  (eval (scheme-expand x) t)) ; lexical eval
 
 (defun arc-eval (x)
-  (arc-eval* (list x)))
-  
+  (eval (arc-expand x) t))
+
+(defun arc-tl ()
+  (scheme-eval '(tl)))
+
+(defun arc-tle ()
+  (scheme-eval '(tle)))
+
 (defmacro arc (&rest body)
-  `(progn ,@(mapcar 'ac-1 body)))
+  `(progn
+     (eval-when-compile
+       (or lexical-binding (y-complain 'lexical-binding)))
+     ,@(mapcar 'arc-expand body)))
 
-;; (defun arc-eval (x)
-;;   (eval `(arc ,x) t))
-
-;; (defun arc-eval* (body)
-;;   (arc-eval `(do ,@body)))
+(defmacro arc* (&rest body)
+  `'(scheme ,@(mapcar 'arc-expand* body)))
+  
+(defmacro scheme (&rest body)
+  `(progn
+     (eval-when-compile
+       (or lexical-binding (y-complain 'lexical-binding)))
+     ,@(mapcar 'scheme-expand body)))
 
 (progn
   (setq max-lisp-eval-depth (* 1335 10))
   (setq max-specpdl-size (* 1335 10))
-  (eval (scm scm-ac ()) t)
-  (arc-eval* scm-arc))
+  (scheme-eval scheme-expressions)
+  (mapc 'arc-eval arc-expressions))
 
-(defun arc-tle () (scm-eval '(tle)))
+;; (eval-and-compile
+;;   (defmacro y-arcify ()
+;;     `(progn ,@(mapcar 'ac-1 arc-expressions)))
+;;   (y-arcify))
 
-(defun arc-tl () (scm-eval '(tl)))
+(arc-eval
+  `(mac emacs (name)
+     (let s sym.name
+       (if (|boundp| s)
+           `(|symbol-value| ',s)
+           (|fboundp| s)
+           `(|symbol-function| ',s)
+         `',(sym:string "|" s "|")))))
 
 ;; (arc (|goto-char| (|point-min|)))
 ;; (arc (time (|buffer-substring| (- (|point|) 200) (|point-max|))))
+;; (arc (time:emacs.buffer-substring (- (emacs.point) 200) (emacs.point-max)))
+;; (arc (len emacs.values))
+
+;; (def-reader-syntax ?{
+;;   (lambda (in ch)
+;;     (let* ((forms (er-read-list in ?}))
+;; 	   (a (car forms))
+;; 	   (bs (cdr forms)))
+;;       `((emacs ,a) ,@bs))))
 
 (defmacro y-test= (a b)
   `(if (not (equal ,a ,b)) (error (format "Expected %S, got %S" ,a ,b)) t))
@@ -4103,8 +4159,9 @@
   (arc-test= #\b ("abc" 1))
   (arc-test= '((#\a 3) (#\b 1) (#\c 1)) (tablist (counts (coerce "aaabc" 'cons))))
   (arc-test= '(#\a #\b #\c) (dedup "aaabbc"))
-  (princ "Tests completed without errors\n")
-  )
+  (princ "Tests completed without errors\n"))
 
 (defun y-run-benchmarks ()
   nil)
+
+(provide 'y)

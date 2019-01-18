@@ -126,17 +126,36 @@
 
 ;;; Code:
 
+(defvar *er-mode* nil
+  "When `*er-mode*' is T, `read' and `read-from-string' have been
+replaced with `er-read' and `er-read-from-string'.")
+
+(when *er-mode*
+  (er-mode nil))
+
 (defvar *er-orig-read* (symbol-function #'read)
   "Remember the original `read' function, because we'll have to
 use it in some situations that can't be handled from Lisp code.")
 
-(defvar *er-macro-chars* (make-hash-table :test 'eq)
+(defvar *er-orig-read-from-string* (symbol-function #'read-from-string)
+  "Remember the original `read-from-string' function so that we
+can restore it when uninstalling our read functions.")
+
+(defvar *er-orig-read-from-minibuffer* (symbol-function #'read-from-minibuffer)
+  "Remember the original `read-from-minibuffer' function so that we
+can restore it when uninstalling our read functions.")
+
+(defvar *er-orig-load-read-function* load-read-function
+  "Remember the original `load-read-function' function so that we
+can restore it when uninstalling our read functions.")
+
+(defconst *er-macro-chars* (make-hash-table :test 'eq)
   "Custom read functions.  A hash that maps character to a
 function of two arguments, stream (as a function) and character.
 This function should return the AST that has been read.  See
 usage of `def-reader-syntax' later on.")
 
-(defvar *er-read-filename* nil
+(defconst *er-read-filename* nil
   "This dynamic variable will be bound by our read functions
 while parsing is in progress.  It'll contain the value of
 `load-file-name', or the name of the current buffer if it doesn't
@@ -195,6 +214,8 @@ the position of the stream."
                            (if (< pos (length in))
                                (- pos 1)
                              pos))
+                          ((eq ch :end)
+			   (length in))
                           (ch (push ch unget))
                           (unget (pop unget))
                           ((< pos (length in))
@@ -238,10 +259,11 @@ true."
 
 (defun er-croak (msg &rest args)
   "Error out in case of parse error."
-  ;; TODO: throw a scan-error.
-  (if args
-      (apply #'error msg args)
-    (error "%s" msg)))
+  (signal 'scan-error (cons msg args)))
+  ;; ;; TODO: throw a scan-error.
+  ;; (if args
+  ;;     (apply #'error msg args)
+  ;;   (error "%s" msg)))
 
 (defun er-read-string ()
   "Read a string from the current stream.  It defers to
@@ -289,7 +311,9 @@ would be correct)."
                          (or (er-letter? ch)
                              (er-digit? ch)
                              (memq ch '(?- ?+ ?= ?* ?/ ?_ ?~ ?! ?@ ?. ?\|
-                                        ?$ ?% ?^ ?& ?: ?< ?> ?{ ?} ?\?))))))))
+                                        ?$ ?% ?^ ?& ?: ?< ?>
+                                       ; ?{ ?}
+                                        ?\?))))))))
 
 (defun er-read-integer (in)
   "Read and return an integer (NIL if there is no integer at
@@ -317,7 +341,7 @@ reader).  If a symbol, it might be auto-prefixed if declared
       (t
        (intern (er-maybe-prefixed name))))))
 
-(defvar *er-prefixed-symbols* (make-hash-table :test #'equal))
+(defconst *er-prefixed-symbols* (make-hash-table :test #'equal))
 
 (defun er-maybe-prefixed (name &optional filename)
   (unless filename (setq filename (er-get-filename)))
@@ -435,7 +459,7 @@ character is encountered this will produce an error."
       (t
        (er-read-symbol in)))))
 
-(defvar *er-substitutions*)
+(defconst *er-substitutions* nil)
 
 (defun er-read-internal (in)
   (if (stringp in)
@@ -616,6 +640,15 @@ character is encountered this will produce an error."
     (let ((*er-read-filename* (er-get-filename)))
       (er-read-internal (er-make-stream in)))))
 
+(defun er-read-from-minibuffer (&optional in)
+  (er-read-internal (er-make-stream in)))
+  ; (funcall *er-orig-read-from-minibuffer* in))
+  ; (if (and load-file-name
+  ;          (string-match "\\.elc$" load-file-name))
+  ;     (funcall *er-orig-read* in)
+  ;   (let ((*er-read-filename* (er-get-filename)))
+  ;     (er-read-internal (er-make-stream in)))))
+
 (defun er-read-from-string (str &optional start end)
   (let ((*er-read-filename* (er-get-filename)))
     (let* ((stream (er-make-stream
@@ -655,11 +688,42 @@ during byte compilation."
     ,@(mapcar (lambda (name)
                 `(er-make-prefixed ,name ,prefix)) names)))
 
-;; install in a prog, so they're read all at once with the original
-;; reader
-(progn
-  (fset 'read (symbol-function 'er-read))
-  (fset 'read-from-string (symbol-function 'er-read-from-string))
-  (setq load-read-function (symbol-function 'er-read)))
+(defun er-current-read-functions ()
+  "A debugging aid. Returns the current state of the reader."
+  `((read . ,(symbol-function 'read))
+    (read-from-string . ,(symbol-function 'read-from-string))
+    (load-read-function . ,load-read-function)
+    (*er-mode* . ,*er-mode*)
+    (*er-orig-read* . ,*er-orig-read*)
+    (*er-orig-read-from-string* . ,*er-orig-read-from-string*)
+    (*er-orig-load-read-function* . ,*er-orig-load-read-function*)))
+
+(defun er-install-read-functions () 
+  (unless *er-mode*
+    (setq *er-orig-load-read-function* load-read-function)
+    (setq load-read-function (symbol-function 'er-read))
+    (fset 'read-from-string (symbol-function 'er-read-from-string))
+    (fset 'read-from-minibuffer (symbol-function 'er-read-from-minibuffer))
+    (fset 'read (symbol-function 'er-read))
+    (setq *er-mode* t))
+  (er-current-read-functions))
+
+(defun er-uninstall-read-functions ()
+  (when *er-mode*
+    (fset 'read *er-orig-read*)
+    (fset 'read-from-string *er-orig-read-from-string*)
+    (fset 'read-from-minibuffer *er-orig-read-from-minibuffer*)
+    (setq load-read-function *er-orig-load-read-function*)
+    (setq *er-orig-load-read-function* nil)
+    (setq *er-mode* nil))
+  (er-current-read-functions))
+
+(defun er-mode (&optional enable)
+  (if enable
+      (er-install-read-functions)
+    (er-uninstall-read-functions)))
+
+(unless *er-mode*
+  (er-mode t))
 
 (provide 'elisp-reader)

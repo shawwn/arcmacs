@@ -1,6 +1,6 @@
 .PHONY: all clean test
 
-Y_HOST ?= emacs -Q --batch
+Y_HOST ?= emacs
 
 Y := Y_HOST="$(Y_HOST)" ./y
 

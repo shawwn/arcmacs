@@ -1,1 +1,2 @@
+make
 Y_DEBUG=1 ./y -f arc-tl
