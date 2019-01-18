@@ -1649,8 +1649,8 @@
             'done
             (let ((val (arc-eval expr)))
               (write (ac-denil val))
-              (namespace-set-variable-value! '_that val)
-              (namespace-set-variable-value! '_thatexpr expr)
+              (namespace-set-variable-value! (ac-global-name 'that) val)
+              (namespace-set-variable-value! (ac-global-name 'thatexpr) expr)
               (newline)
               (tl2)))))))
 
