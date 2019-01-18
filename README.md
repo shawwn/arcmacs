@@ -72,3 +72,5 @@ arc> (that 58)
 the above example the most recent value was a function that adds 42 to
 its argument.)
 
+# License
+MIT.
