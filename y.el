@@ -392,11 +392,21 @@
   (eq x ar-eof))
 
 (defun ar-read (&rest args)
-  (or (ignore-errors (er-read (read-string "")))
-      ar-eof))
+  (let ((s "") (r ar-eof) (x nil) (done nil))
+    (while (and (not done)
+                (setq x (ignore-errors (read-string ""))))
+      (setq s (concat s x))
+      (setq s (concat s "\n"))
+      (condition-case c
+         (setq r (er-read s)
+               done t)
+         (scan-error)))
+    r))
 
 (scm-def 'eof ar-eof)
 (scm-def 'eof-object? #'ar-eof-object-p)
+
+(scm-def 'current-input-port (lambda (&rest _args) t))
 
 (scm-def 'display (scm-ref 'princ))
 (scm-def 'newline (scm-ref 'terpri))
@@ -1645,7 +1655,7 @@
             (tl2))
     (lambda ()
       (let ((expr (read)))
-        (if (eqv? expr ':a)
+        (if (or (eof-object? expr) (eqv? expr ':a))
             'done
             (let ((val (arc-eval expr)))
               (write (ac-denil val))
