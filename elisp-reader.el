@@ -190,6 +190,9 @@ the position of the stream."
       ((bufferp in) (lambda (&optional ch)
                       (with-current-buffer in
                         (cond
+                          ((eq ch :pos) (point))
+                          ((eq ch :end) (point-max))
+                          ((eq ch :string) (buffer-string))
                           (ch (push ch unget))
                           (unget (pop unget))
                           (t
@@ -216,6 +219,8 @@ the position of the stream."
                              pos))
                           ((eq ch :end)
 			   (length in))
+                          ((eq ch :string)
+			   in)
                           (ch (push ch unget))
                           (unget (pop unget))
                           ((< pos (length in))
@@ -227,7 +232,8 @@ the position of the stream."
                           (unget (pop unget))
                           (t (funcall in)))))
       (t
-       (read-string "Lisp expression:")))))
+       (let ((x (ignore-errors (read-string ""))))
+         (if (null x) x (er-make-stream x)))))))
 
 (defun er-orig-read ()
   "Calls the original (low-level C) `read'.  This function should
