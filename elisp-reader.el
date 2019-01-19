@@ -328,10 +328,21 @@ current position in stream)."
     (when (< 0 (length num))
       (string-to-number num))))
 
-(defun er-skip-comment (in)
-  "Skip over a comment (move to end-of-line)."
+(defun er-eol (in)
   (er-read-while in (lambda (ch)
                       (not (eq ch ?\n)))))
+
+
+(defun er-skip-comment (in)
+  "Skip over a comment (move to end-of-line)."
+  (when (eq (er-peek in) ?\;
+            )
+    (er-eol in)))
+
+(defun er-next-location (in)
+  (er-skip-whitespace in)
+  (er-skip-comment in)
+  (funcall in :pos))
 
 (defun er-read-symbol (in)
   "Reads a symbol or a number.  If what follows in the stream

@@ -6,6 +6,8 @@
 (eval-and-compile
   (require 'cl)
   (require 'elisp-reader)
+  (require 'sha1)
+  (require 'ext)
 
   (defun scm-letterp (c) (and c (or (<= ?a c ?z) (<= ?A c ?Z))))
 
@@ -74,6 +76,13 @@
 (defun scm-output-port-p (x)
   (or (bufferp x) (functionp x)))
 
+; bad idea
+; (defun scm-char-p (x)
+;   (and (stringp x) (= (length x) 1)))
+
+(defun scm-char-p (x)
+  nil)
+
 (defconst scm-symbols
   '(+ - / *
       < <= = >= >
@@ -93,6 +102,7 @@
       (symbol? . symbolp)
       (vector? . vectorp)
       (string? . stringp)
+      (char? . scm-char-p)
       (integer? . integerp)
       (exact? . integerp)
       (number? . numberp)
@@ -139,7 +149,7 @@
 
 (defconst scm-shadows
   `(
-    (set! . ,(lambda (env x y) `(setq ,x (fset ',x ,(scm y env)))))
+    (set! . ,(lambda (env x y) (let ((id (scm x env))) `(setq ,id (fset ',id ,(scm y env))))))
     (cdar . ,(lambda (env x) `(cdr (car ,(scm x env)))))
     (cadar . ,(lambda (env x) `(car (cdr (car ,(scm x env))))))
     (cddar . ,(lambda (env x) `(cdr (cdr (car ,(scm x env))))))
@@ -152,7 +162,7 @@
 		   ;; `(scm-assign ,a ,b)))))
 		   `(setq ,a (fset ',a ,b))))))
     (read-from-string . ,(lambda (env x) `(car (read-from-string ,(scm x env)))))
-    (char? . ,(lambda (_env _x) 'nil))
+    ; (char? . ,(lambda (_env _x) 'nil))
     (apply . ,(lambda (env x &rest args) `(apply ,(scm-sym x env) ,@(scm-rest args env))))
     (map . ,(lambda (env x &rest args) `(mapcar ,(scm-sym x env) ,@(scm-rest args env))))
 
@@ -201,8 +211,13 @@
 
 (defun scm-id-literal-p (x) (and (symbolp x) (eqv-p #\| (scm-string-ref (symbol-name x) 0))))
 
+(defvar scm-skip '(%do %fn %let %call %set %quote %quasiquote %unquote %unquote-splicing %compiling %if))
+(defvar ac-skip '(%do %fn %let %call %set %quote %quasiquote %unquote %unquote-splicing %compiling %if))
+
 (defun scm (s env)
-  (cond ((scm-literalp s) s)
+  (cond ((memq (car-safe s) scm-skip) s)
+	((eq (car-safe s) 'function) s)
+        ((scm-literalp s) s)
 	((scm-id-literal-p s) (intern (scm-inner (symbol-name s))))
 	((symbolp s) (scm-var-ref s env))
 	((eq (car-safe s) 'quote)
@@ -211,6 +226,7 @@
 		 ((eq x 'unquote) ''\,)
 		 ((eq x 'unquote-splicing) ''\,@)
 		 (t s))))
+	((eq (car-safe s) '%do) s)
 	((eq (car-safe s) '\`) (scm-qq (cadr s) env))
 	((eq (car-safe s) 'lambda) (scm-lambda (cadr s) (cddr s) env))
 	((eq (car-safe s) 'module) `(progn ,@(scm-body (cdr (cddr s)) env)))
@@ -218,6 +234,7 @@
 	((eq (car-safe s) 'case) (scm-case (cadr s) (cddr s) env))
 	((eq (car-safe s) 'define) (scm-define (cadr s) (cddr s) env))
 	((eq (car-safe s) 'parameterize)  (scm-parameterize (cadr s) (cddr s) env))
+	((eq (car-safe s) 'let-values)  (scm-let-values (cadr s) (cddr s) env))
 	((memq (car-safe s) '(let let*)) `(,(car s) ,@(scm-let (cadr s) (cddr s) env)))
 	((memq (car-safe s) scm-noop) '())
 	((scm-shadow-p s env) (scm-shadow s env))
@@ -376,6 +393,23 @@
     `(,xs
       ,@(scm-body body (append (mapcar #'car xs) env)))))
 
+(defun ar-values (x)
+  (if (eq (car-safe x) '%values)
+      (cdr x)
+      (error "Expected values")))
+    
+
+(defun scm-let-values (bs body env)
+  (cond ((null bs) `(progn ,@(scm-body body env)))
+        ((> (length bs) 1) (scm-let-values (list (car bs))
+                             `(let-values (,@(cdr bs)) ,@body)))
+        (t (let ((lh (caar bs))
+                 (rh (scm (cadar bs) env)))
+             `(apply
+                (lambda ,lh
+                  ,@(scm-body body (append lh env)))
+                (ar-values ,rh))))))
+
 (defun scm-parameterize (bs body env)
   (cond ((null bs) `(progn ,@(scm-body body env)))
         ((= (length bs) 1)
@@ -420,7 +454,7 @@
     (condition-case c
         (cond ((functionp port) (er-next (funcall port)))
               ((null port) (er-read-char))
-              ((bufferp port) (er-read-charj port))
+              ((bufferp port) (er-read-char port))
               ((stringp port) (er-read port))
               (t (error (format "can't read from port %S" port))))
       (scan-error eof))))
@@ -429,7 +463,7 @@
   (let ((port (if (null args) nil (car args)))
         (eof (if (null (cdr args)) ar-eof (cadr args))))
     (condition-case c
-        (cond ((functionp port) (ar-read (funcall port)))
+        (cond ((functionp port) (er-read port))
               ((null port) (ar-read-expr))
               ((bufferp port) (er-read port))
               ((stringp port) (er-read port))
@@ -447,6 +481,32 @@
                done t)
          (scan-error)))
     r))
+
+; (defun ar-next-location (port)
+;   (condition-case c
+;     (cond ((functionp port) (+ (funcall port :pos) (cdr (read-from-string (substring (funcall port :string) (funcall port :pos))))))
+;           ((bufferp port) (with-current-buffer port (save-excursion (read port) (point))))
+;           ((stringp port) (cdr (read-from-string port)))
+;           (t (error (Format "Can't read port next location from %S" port))))
+;     (scan-error nil)))
+
+; (defun ar-last-location (port)
+;   (condition-case c
+;     (cond ((functionp port) (funcall port :end))
+;           ((bufferp port) (with-current-buffer port (point-max)))
+;           ((stringp port) (length port))
+;           (t (error (Format "Can't read last location from %S" port))))
+;     (scan-error nil)))
+
+(defun prn (x)
+  (princ (prin1-to-string x))
+  (terpri)
+  x)
+
+(defun ar-port-next-location (port)
+  `(%values nil nil ,(+ 1 (er-next-location port))))
+
+(scm-def 'port-next-location #'ar-port-next-location)
 
 (scm-def 'eof ar-eof)
 (scm-def 'eof-object? #'ar-eof-object-p)
@@ -472,25 +532,28 @@
 (scm-def 'make-parameter #'ar-make-parameter)
 
 (defun ar-open-string (&optional str dir)
-  (let ((buf (generate-new-buffer (format "ar-%s-string" (or dir "input")))))
-    (with-current-buffer buf
-      (when str
-        (save-excursion
-          (insert str))))
-    (er-make-stream buf)))
+  (princ (format "ar-open-string %S\n" str))
+  (er-make-stream str))
+  ; (let ((buf (generate-new-buffer (format "ar-%s-string" (or dir "input")))))
+  ;   (with-current-buffer buf
+  ;     (when str
+  ;       (save-excursion
+  ;         (insert str))))
+  ;   (er-make-stream buf)))
 
 (scm-def 'open-input-string #'ar-open-string)
 (scm-def 'open-output-string #'ar-open-string)
 
-(defun ar-open-file (filename &optional dir)
-  (let ((buf (generate-new-buffer (format "ar-%s-file %S" (or dir "input") filename))))
+(defun ar-open-file (dir filename &optional mode op &rest args)
+  (let ((buf (generate-new-buffer (format "ar-%s-file %S" (or dir 'input) filename))))
     (with-current-buffer buf
-      (save-excursion
-        (insert-file-contents-literally filename)))
+      (when (eq dir 'input)
+        (save-excursion
+          (insert-file-contents-literally filename))))
     (er-make-stream buf)))
 
-(scm-def 'open-input-file #'ar-open-file)
-(scm-def 'open-output-file #'ar-open-file)
+(scm-def 'open-input-file (lambda (&rest args) (apply #'ar-open-file 'input args)))
+(scm-def 'open-output-file (lambda (&rest args) (apply #'ar-open-file 'output args)))
 
 (defun ar-close-port (s)
   (cond ((null s) nil)
@@ -516,10 +579,22 @@
 (ar-defvar *stdout* ar-output-port nil)
 (ar-defvar *stderr* ar-error-port nil)
 
+(defun ar-flush-output ()
+  nil)
+
+(scm-def 'flush-output #'ar-flush-output)
+
 (scm-def 'current-input-port ar-input-port)
 (scm-def 'current-output-port ar-output-port)
 (scm-def 'current-error-port ar-error-port)
 
+(defun ar-string (&rest args)
+  (apply #'string
+         (mapcar (lambda (x)
+                   (if (stringp x) (string-to-char x) x))
+                 args)))
+
+(scm-def 'string #'ar-string)
 (scm-def 'display (scm-ref 'princ))
 (scm-def 'newline (scm-ref 'terpri))
 (scm-def 'read #'ar-read)
@@ -529,7 +604,7 @@
   (cond ((functionp port) (funcall port))
         ((bufferp port)
           (with-current-buffer port
-            (if (>= (pont) (point-max))
+            (if (>= (point) (point-max))
                 eof
                 (char-after (point)))))
         (t (error (format "Don't know how to read byte from %S" port)))))
@@ -570,6 +645,17 @@
 (scm-def 'ar-tmpname nil)
 
 (scm-def 'setuid nil)
+
+(defun ar-current-seconds ()
+  (truncate (time-to-seconds (current-time))))
+
+(defun ar-current-milliseconds ()
+  (truncate (* 1000 (float-time))))
+
+(scm-def 'current-milliseconds #'ar-current-milliseconds)
+(scm-def 'current-process-milliseconds #'ar-current-milliseconds)
+(scm-def 'current-gc-milliseconds #'ar-current-milliseconds)
+(scm-def 'current-seconds #'ar-current-seconds)
 
 (scm-def 'error
   (lambda (msg &rest xs)
@@ -635,16 +721,37 @@
   (lambda (seconds)
     (sit-for seconds)))
 
-(scm-def 'system nil)
+(defun ar-directory-list (path)
+  (cddr (directory-files path))) ; cddr skips "." and ".."
+
 
 (scm-def 'path->string (lambda (x) x))
-(scm-def 'directory-list (scm-ref 'directory-files))
+(scm-def 'directory-list #'ar-directory-list)
 (scm-def 'file-exists? (scm-ref 'file-exists-p))
 (scm-def 'directory-exists? (scm-ref 'file-accessible-directory-p))
 (scm-def 'delete-file (scm-ref 'delete-file))
 (scm-def 'substring (scm-ref 'substring))
-(let ((time (current-time)))
-  (scm-def 'current-milliseconds (lambda () (* 1000.0 (float-time (time-since time))))))
+; (let ((time (current-time)))
+;   (scm-def 'current-milliseconds (lambda () (* 1000.0 (float-time (time-since time))))))
+
+(defun ar-system (cmd)
+  (let ((s (shell-command-to-string cmd)))
+    (princ s)
+    nil))
+
+(scm-def 'system #'ar-system)
+
+(scm-def 'char->ascii #'char-to-string)
+(scm-def 'ascii->char #'string-to-char)
+
+(scm-def 'seconds->date #'decode-time)
+(scm-def 'date-second (lambda (l) (nth 0 l)))
+(scm-def 'date-minute (lambda (l) (nth 1 l)))
+(scm-def 'date-hour (lambda (l) (nth 2 l)))
+(scm-def 'date-day (lambda (l) (nth 3 l)))
+(scm-def 'date-month (lambda (l) (nth 4 l)))
+(scm-def 'date-year (lambda (l) (nth 5 l)))
+
 
 (defconst scheme-expressions '
 (module ac mzscheme
@@ -662,7 +769,10 @@
 ; need in order to decide whether set should create a global.
 
 (define (ac s env)
-  (cond ((string? s) (ac-string s env))
+  (cond ((eq? (xcar s) '%do) s)
+        ((member (xcar s) |ac-skip|) s)
+        ((eq? (xcar s) '%up) (cdr s))
+        ((string? s) (ac-string s env))
 	((and (vector? s) (not (ar-tagged? s))) (ac `(fn (_) ,(append s nil)) env))
 	((literal? s) s)
         ((eqv? s 'nil) (list 'quote 'nil))
@@ -1547,6 +1657,7 @@
 (xdef call-w/stdin
       (lambda (port thunk)
         (parameterize ((current-input-port port)) (thunk)))) 
+
 (xdef readc (lambda str
               (let ((c (read-char (if (pair? str)
                                       (car str)
@@ -1671,8 +1782,7 @@
                              (associate-custodian nc in1 out)
                              (list in1
                                    out
-                                   (let-values (((us them) (tcp-addresses out)))
-                                               them))))))))
+                                   (let-values (((us them) (tcp-addresses out))) them))))))))
 
 ; allow Arc to give up root privileges after it
 ; calls open-socket. thanks, Eli!
@@ -2076,13 +2186,18 @@
 
 (xdef memory current-memory-use)
 
-(xdef declare (lambda (key val)
-                (let ((flag (not (ar-false? val))))
+(xdef declare (lambda (key . val)
+                (if (null? val)
+                  (case key
+                    ((atstrings)      atstrings)
+                    ((direct-calls)   direct-calls)
+                    ((explicit-flush) explicit-flush))
+                (let ((flag (not (ar-false? (car val)))))
                   (case key
                     ((atstrings)      (set! atstrings      flag))
                     ((direct-calls)   (set! direct-calls   flag))
                     ((explicit-flush) (set! explicit-flush flag)))
-                  val)))
+                  (car val)))))
 
 (putenv "TZ" ":GMT")
 
@@ -2131,18 +2246,17 @@
         (#t                         
          (atpos s (+ i 1)))))
 
+(define (unesc cs)
+  (cond ((null? cs) '())
+        ((and (eqv? (car cs) #\@) 
+              (not (null? (cdr cs)))
+              (eqv? (cadr cs) #\@))
+         (unesc (cdr cs)))
+        (#t
+         (cons (car cs) (unesc (cdr cs))))))
+
 (define (unescape-ats s)
-  (list->string (letrec ((unesc (lambda (cs)
-                                  (cond 
-                                    ((null? cs) 
-                                     '())
-                                    ((and (eqv? (car cs) #\@) 
-                                          (not (null? (cdr cs)))
-                                          (eqv? (cadr cs) #\@))
-                                     (unesc (cdr cs)))
-                                    (#t
-                                     (cons (car cs) (unesc (cdr cs))))))))
-                  (unesc (string->list s)))))
+  (list->string (unesc (string->list s))))
 
 ))
 
@@ -3004,10 +3118,11 @@
   (w/infile s name (if emacs* (inside s) (allchars s))))
 
 (def writefile (val file)
+  (if emacs* nil
   (let tmpfile (+ file ".tmp")
     (w/outfile o tmpfile (write val o))
     (mvfile tmpfile file))
-  val)
+  val))
 
 (def sym (x) (coerce x 'sym))
 
@@ -4801,6 +4916,11 @@ Connection: close"))
 ; to prn a blank line before anything meant to be part of the page.
 
 (mac defop-raw (name parms . body)
+  (prs "defop-raw" name parms)
+  (prn)
+  (let (port req) parms
+    (unless (caris port 'o) (= (car parms) `(o ,(car parms) (stdout))))
+    (unless (caris req 'o)  (= (cadr parms) `(o ,(cadr parms) (the-req*)))))
   (w/uniq t1
     `(= (srvops* ',name) 
         (fn ,parms 
@@ -4815,7 +4935,7 @@ Connection: close"))
 (mac defop (name parm . body)
   (w/uniq gs
     `(do (wipe (redirector* ',name))
-         (defop-raw ,name (,gs ,parm) 
+         (defop-raw ,name ((o ,gs (stdout)) (o ,parm (the-req*)))
            (w/stdout ,gs (prn) ,@body)))))
 
 ; Defines op as a redirector.  Its retval is new location.
@@ -4823,7 +4943,7 @@ Connection: close"))
 (mac defopr (name parm . body)
   (w/uniq gs
     `(do (set (redirector* ',name))
-         (defop-raw ,name (,gs ,parm)
+         (defop-raw ,name ((o ,gs (stdout)) (o ,parm (the-req*)))
            ,@body))))
 
 ;(mac testop (name . args) `((srvops* ',name) ,@args))
@@ -5239,7 +5359,10 @@ Connection: close"))
 
 (= cookie->user* (table) user->cookie* (table) logins* (table))
 
-(def get-user (req) 
+(def the-req* ()
+  (obj cooks (tablist:obj "user" (user->cookie* "shawn") "ip" "::1")))
+
+(def get-user ((o req (the-req*)))
   (let u (aand (alref req!cooks "user") (cookie->user* (sym it)))
     (when u (= (logins* u) req!ip))
     u))
@@ -5430,11 +5553,12 @@ Connection: close"))
 ; believe there's no way to just send the chars.
 
 (def shash (str)
+ (if emacs* (|sha1| str)
   (let fname (+ "/tmp/shash" (rand-string 10))
     (w/outfile f fname (disp str f))
     (let res (tostring (system (+ "openssl dgst -sha1 <" fname)))
       (do1 (cut res 0 (- (len res) 1))
-           (rmfile fname)))))
+           (rmfile fname))))))
 
 (= dc-usernames* (table))
 
@@ -6177,7 +6301,7 @@ Connection: close"))
          ids   (sort > (map int (dir storydir*))))
     (if ids (= maxid* (car ids)))
     (noisy-each 100 id (firstn initload* ids)
-      (let i (load-item id)
+      (let i (load-item:prn id)
         (push i (items i!type))))
     (= stories*  (rev (merge (compare < !id) items!story items!poll))
        comments* (rev items!comment))
