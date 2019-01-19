@@ -532,7 +532,6 @@
 (scm-def 'make-parameter #'ar-make-parameter)
 
 (defun ar-open-string (&optional str dir)
-  (princ (format "ar-open-string %S\n" str))
   (er-make-stream str))
   ; (let ((buf (generate-new-buffer (format "ar-%s-string" (or dir "input")))))
   ;   (with-current-buffer buf
