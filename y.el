@@ -549,6 +549,8 @@
 (scheme-def tcp-accept (listener)
   (catch 'tcp-accept-result
     (while t
+         (unless (process-live-p listener)
+           (signal 'end-of-file listener))
          (maphash (lambda (client srv)
                     (when (eq srv listener)
                       (remhash client ar-accepts)
