@@ -881,7 +881,11 @@
 (defun ar-current-milliseconds ()
   (truncate (* 1000 (float-time))))
 
+(defun ar-current-inexact-milliseconds ()
+  (* 1000 (float-time)))
+
 (scheme-def current-milliseconds #'ar-current-milliseconds)
+(scheme-def current-inexact-milliseconds #'ar-current-inexact-milliseconds)
 (scheme-def current-process-milliseconds #'ar-current-milliseconds)
 (scheme-def current-gc-milliseconds #'ar-current-milliseconds)
 (scheme-def current-seconds #'ar-current-seconds)
@@ -2464,10 +2468,10 @@
 (xdef exact (lambda (x) (tnil (exint? x))))
 
 (xdef msec                         current-milliseconds)
-(xdef current-process-milliseconds current-process-milliseconds)
-(xdef current-gc-milliseconds      current-gc-milliseconds)
+(xdef mnow                         current-inexact-milliseconds)
 
 (xdef seconds current-seconds)
+(xdef now (lambda () (/ (current-inexact-milliseconds) 1000.0)))
 
 (print-hash-table #t)
 
