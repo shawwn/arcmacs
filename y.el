@@ -27,13 +27,43 @@
 	  ch)))))
 
 (eval-and-compile
+
+  (defvar scm-reserved '(
+    do lambda let let* and or if cond when unless 
+    while for loop case
+    define define-syntax define-values
+    begin begin-for-syntax
+    + - / *
+    < <= = == >= > 
+    #t #f true false t nil
+    car cdr caar cadr cddr caaar caadr cadar caddr cdaar cdadr cddar cdddr
+    lib require provide module load eof read write eval
+    length empty last keep set max min fill-table abs round count
+    eq eqv equal eq? eqv? equal?
+    cons list member assoc compose all map string thread
+    tag link only any nor private public
+    sort close error with-handlers
+    date tokens
+    place place* place/context place-kill
+
+    stdin stdout stderr rand trunc type rep sleep system rand dir load-path
+    trunc exact msec dead quit log exp expt apply annotate sref
+    make-hash-table
+    point throw catch condition-case unwind-protect ignore
+    acons atom some find nthcdr warn repeat push pop adjoin pushnew prn merge
+    union reduce point downcase upcase mismatch get subst concat
+    getenv setenv putenv readenv
+  ))
+
+  (defun scm-reserved-p (x) (member x scm-reserved))
+
   (defun scm-global-name (s)
     (let ((x (symbol-name s)))
       (intern (if (or (string= "ac" x)
 		      (string-prefix-p "ar-" x)
 		      (string-prefix-p "ac-" x))
 		  x
-		(concat "^" x)))))
+		(if (scm-reserved-p s) (concat "^" x) x)))))
 
   (defun ac-inner (s) (substring s 1 -1))
 
@@ -42,18 +72,25 @@
   (defun ac-global-name (x)
     (intern (if (ac-id-literal-p x)
                 (ac-inner (symbol-name x))
-                (concat "." (symbol-name x))))))
+                (if (or (scm-reserved-p x) nil)
+                    (concat "." (symbol-name x))
+                    (symbol-name x))))))
 
 (defconst scm-noop
-  '(provide require unsafe! print-hash-table putenv define-syntax))
+  '(provide require unsafe! print-hash-table define-syntax define-syntax-rule))
 
 (defconst scm-defs '())
 
 (defun fn-p (x)
   (if (symbolp x)
       nil
-    (functionp x)))
+    (or (functionp x)
+        (macrop x))))
   
+(defun eq-p (a b)
+  (or (eq a b)
+      (and (stringp a) (stringp b) (string= a b))))
+
 (defun eqv-p (a b)
   (or (eql a b)
       (and (stringp a) (stringp b) (string= a b))
@@ -91,7 +128,7 @@
       and or not
       if when unless
 
-      (eq? . eq)
+      (eq? . eq-p)
       ;; (eqv? . eql)
       (eqv? . eqv-p)
       (equal? . equal)
@@ -185,8 +222,6 @@
     (hash-table-for-each
      . ,(lambda (env tbl f)
 	  `(maphash ,(scm f env) ,(scm tbl env))))
-			
-
     ))
 
 (defun scm-set-def (name val)
@@ -211,8 +246,8 @@
 
 (defun scm-id-literal-p (x) (and (symbolp x) (eqv-p #\| (scm-string-ref (symbol-name x) 0))))
 
-(defvar scm-skip '(%do %fn %let %call %set %quote %quasiquote %unquote %unquote-splicing %compiling %if))
-(defvar ac-skip '(%do %fn %let %call %set %quote %quasiquote %unquote %unquote-splicing %compiling %if))
+(defvar scm-skip '(%do %fn %let %call %set %quote %quasiquote %unquote %unquote-splicing %compiling %if function))
+(defvar ac-skip '(%do %fn %let %call %set %quote %quasiquote %unquote %unquote-splicing %compiling %if function))
 
 (defun scm (s env)
   (cond ((memq (car-safe s) scm-skip) s)
@@ -240,6 +275,15 @@
 	((scm-shadow-p s env) (scm-shadow s env))
 	((consp s) (scm-call (car s) (cdr s) env))
 	(t (error "Bad object in expression"))))
+
+(defmacro scheme (&rest body)
+  (scm `(begin ,@body) nil))
+
+(defmacro scheme-def (name x &rest body)
+  (declare (indent defun))
+  (if (null body)
+      `(scm-def ',name ,x)
+    `(scm-def ',name (lambda ,x ,@body))))
 
 (defun scm-sym (x env)
   (let ((f (scm x env)))
@@ -271,6 +315,7 @@
 (defun scm-literalp (x)
   (or (numberp x)
       (stringp x)
+      (keywordp x)
       (booleanp x)
       (eq x 't)
       (eq x 'nil)))
@@ -319,11 +364,14 @@
   `(,@(scm-call-1 (scm fn env) env)
     ,@(mapcar (lambda (x) (scm x env)) args)))
 
-(defun scm-ref (x)
+(defun scm-ref (x &rest unset)
   (if (symbolp x)
       (if (boundp x)
 	  (symbol-value x)
-	(symbol-function x))
+        (if (fboundp x)
+	    (symbol-function x)
+          (if unset (car unset)
+            (error (format "scm-ref: unbound variable %s" x)))))
     x))
 
 (defun scm-lambda-args (args)
@@ -424,24 +472,160 @@
                 (funcall ,param ,prev)))))
         (t (error "todo"))))
 
-(scm-def 'string->list (lambda (s)
+(scheme-def bytes-ref #'elt)
+
+(scheme-def crypto-random-bytes (n)
+   (let ((value (list)))
+     (dotimes (number n)
+       (setq value (cons (random 256) value)))
+     value))
+
+(scheme-def file-or-directory-modify-seconds (filename)
+   (float-time
+     (file-attribute-modification-time
+       (file-attributes filename))))
+
+(scheme-def call-with-current-continuation (f)
+   (error "call-with-current-continuation not implemented in emacs lisp!"))
+
+(scheme-def call-with-escape-continuation (f)
+   (let ((id (ar-gensym 'return)))
+     (catch id
+       (let ((ret (lambda (result) (throw id result))))
+         (funcall f ret)))))
+
+(scheme-def thread (function &optional name)
+   (make-thread function name))
+
+(scheme-def kill-thread (thread)
+   (thread-signal thread 'quit nil)) ; TODO: is this correct?
+
+(scheme-def break-thread (thread)
+   (thread-signal thread 'quit nil)) ; TODO: is this correct?
+
+(scheme-def current-thread #'current-thread)
+
+(scheme-def exit #'kill-emacs)
+
+(scheme-def current-memory-use #'memory-info)
+
+(scheme-def sin #'sin)
+(scheme-def cos #'cos)
+(scheme-def tan #'tan)
+
+(scheme-def asin #'asin)
+(scheme-def acos #'acos)
+(scheme-def atan #'atan)
+
+(scheme-def exp #'exp)
+(scheme-def log #'log)
+(scheme-def expt #'expt)
+(scheme-def sqrt #'sqrt)
+
+(scheme-def tcp-listener? #'processp)
+
+(scheme-def tcp-close #'delete-process)
+
+(defconst ar-clients (make-hash-table))
+(defconst ar-accepts (make-hash-table))
+
+(scheme-def tcp-accept-ready? (listener)
+  (catch 'tcp-accept-ready?-result
+    (maphash (lambda (client srv)
+               (when (eq srv listener)
+                 (throw 'tcp-accept-ready?-result t)))
+             ar-accepts)))
+
+(defun scm-make-port (&optional buffer handle-data)
+  (let ((port (or buffer (generate-new-buffer " *port*")))
+        (handle-data (or handle-data #'insert)))
+    (lambda (&rest args)
+      (with-current-buffer port
+        (cond ((and args (eq (car args) :string))
+               port)
+              (args (funcall handle-data (car args)))
+              (t (prog1 (buffer-string) (setf (buffer-string) ""))))))))
+
+(scheme-def tcp-accept (listener)
+  (catch 'tcp-accept-result
+    (while t
+         (maphash (lambda (client srv)
+                    (when (eq srv listener)
+                      (remhash client ar-accepts)
+                      (let ((i (scm-make-port (process-buffer client)))
+                            (o (scm-make-port nil (lambda (data) (process-send-string client data)))))
+                        (throw 'tcp-accept-result (list i o)))))
+                  ar-accepts)
+         (sleep-for 0.05))))
+
+(scheme-def tcp-listen (port-no &optional max-allow-wait reuse? hostname)
+  (let* ((max-allow-wait (or max-allow-wait 4))
+         (host (or hostname "0.0.0.0"))
+         (name (format "listen %s:%d" host port-no))
+         (buffer (format "*%s*" name))
+         (reuse? (or reuse? #f))
+         (server nil))
+    (setq server
+      (make-network-process
+        :server max-allow-wait
+        :name name
+        :buffer buffer
+        :family 'ipv4
+        :host host
+        :service port-no
+        :sentinel (lambda (proc msg)
+                    (print `(sentinel ,(eq proc server) ,proc ,(process-buffer proc) ,msg))
+                    (print "")
+                    (if (string-match-p "^open from " msg)
+                        (progn
+                          (set-process-buffer proc (open-output-string))
+                          (puthash proc server ar-accepts)
+                          (puthash proc server ar-clients))
+                      (if (eqv-p proc server)
+                          (progn
+                            (maphash (lambda (client srv)
+                                       (when (eqv-p srv server)
+                                         (delete-process client)
+                                         ;(kill-buffer (process-buffer client))
+                                         ;(remhash client ar-clients)
+                                         ))
+                                     ar-clients)
+                            (kill-buffer (process-buffer server)))
+                        (progn
+                          (when (process-buffer proc)
+                            (kill-buffer (process-buffer proc)))
+                          (remhash proc ar-accepts)
+                          (remhash proc ar-clients)))))
+        :filter (lambda (proc string)
+                  (let ((buf (process-buffer proc)))
+                    (unless (buffer-live-p buf)
+                      (setq buf (open-output-string))
+                      (set-process-buffer proc buf))
+                    (print `(filter ,(eq proc server) ,proc ,buf ,string))
+                    (with-current-buffer buf
+                      (insert string))
+                  nil))
+        :reuseaddr reuse?
+        ))))
+
+(scheme-def string->list (s)
   (let ((l ())
 	(i 0)
 	(n (length s)))
     (while (< i n)
       (push (scm-string-ref s i) l)
       (setq i (+ i 1)))
-    (reverse l))))
+    (reverse l)))
 
-(scm-def 'list->string (lambda (l)
+(scheme-def list->string (l)
   ;; (apply 'string l)))
-  (apply 'concat l)))
+  (apply 'concat l))
 
-(scm-def 'ac-nameit (lambda (name v)
+(scheme-def ac-nameit (name v)
   (if (and (not (null name)) (symbolp name))
       (let ((n (intern (concat " " (symbol-name name)))))
         (list 'let `((,n ,v)) n))
-      v)))
+      v))
 
 (defconst ar-eof (make-hash-table))
 
@@ -457,6 +641,7 @@
               ((bufferp port) (er-read-char port))
               ((stringp port) (er-read port))
               (t (error (format "can't read from port %S" port))))
+      (end-of-file eof)
       (scan-error eof))))
 
 (defun ar-read (&rest args)
@@ -468,6 +653,7 @@
               ((bufferp port) (er-read port))
               ((stringp port) (er-read port))
               (t (error (format "can't read from port %S" port))))
+      (end-of-file eof)
       (scan-error eof))))
 
 (defun ar-read-expr ()
@@ -479,6 +665,7 @@
       (condition-case c
          (setq r (er-read s)
                done t)
+         (end-of-file)
          (scan-error)))
     r))
 
@@ -506,10 +693,10 @@
 (defun ar-port-next-location (port)
   `(%values nil nil ,(+ 1 (er-next-location port))))
 
-(scm-def 'port-next-location #'ar-port-next-location)
+(scheme-def port-next-location #'ar-port-next-location)
 
-(scm-def 'eof ar-eof)
-(scm-def 'eof-object? #'ar-eof-object-p)
+(scheme-def eof ar-eof)
+(scheme-def eof-object? #'ar-eof-object-p)
 
 (defun ar-predicate (getter setter)
   (lambda (&rest args)
@@ -525,11 +712,11 @@
 ;   (lambda (&rest args)
 ;     (if (null args) (value) (value (car args)))))
 
-(defun ar-make-parameter (value)
+(defun ar-make-parameter (value &optional guard name)
   (lambda (&rest args)
     (if (null args) value (setq value (car args)))))
 
-(scm-def 'make-parameter #'ar-make-parameter)
+(scheme-def make-parameter #'ar-make-parameter)
 
 (defun ar-open-string (&optional str dir)
   (er-make-stream str))
@@ -540,19 +727,26 @@
   ;         (insert str))))
   ;   (er-make-stream buf)))
 
-(scm-def 'open-input-string #'ar-open-string)
-(scm-def 'open-output-string #'ar-open-string)
+(scheme-def open-input-string #'ar-open-string)
+(scheme-def open-output-string () 
+  ;(ar-open-string "")
+  (generate-new-buffer " *string-output*")
+  )
 
 (defun ar-open-file (dir filename &optional mode op &rest args)
-  (let ((buf (generate-new-buffer (format "ar-%s-file %S" (or dir 'input) filename))))
+  (let ((buf (generate-new-buffer (format "ar-%s-file %S" (or dir 'input) filename)))
+        (cwd default-directory))
     (with-current-buffer buf
       (when (eq dir 'input)
         (save-excursion
-          (insert-file-contents-literally filename))))
-    (er-make-stream buf)))
+          (insert-file-contents-literally filename)))
+      (setq-local default-directory (file-name-directory (expand-file-name filename cwd))))
+    ;(er-make-stream buf)
+    buf
+    ))
 
-(scm-def 'open-input-file (lambda (&rest args) (apply #'ar-open-file 'input args)))
-(scm-def 'open-output-file (lambda (&rest args) (apply #'ar-open-file 'output args)))
+(scheme-def open-input-file (&rest args) (apply #'ar-open-file 'input args))
+(scheme-def open-output-file (&rest args) (apply #'ar-open-file 'output args))
 
 (defun ar-close-port (s)
   (cond ((null s) nil)
@@ -561,8 +755,8 @@
         ((stringp s) s)
         (t (error (format "Can't close %S" s)))))
 
-(scm-def 'close-input-port #'ar-close-port)
-(scm-def 'close-output-port #'ar-close-port)
+(scheme-def close-input-port #'ar-close-port)
+(scheme-def close-output-port #'ar-close-port)
 
 (defun ar-get-output-string (port)
   (if (functionp port)
@@ -572,20 +766,22 @@
         (goto-char (point-min))
         (buffer-string)))))
 
-(scm-def 'get-output-string #'ar-get-output-string)
+(scheme-def get-output-string #'ar-get-output-string)
 
-(ar-defvar *stdin*  ar-input-port nil)
-(ar-defvar *stdout* ar-output-port nil)
-(ar-defvar *stderr* ar-error-port nil)
+(ar-defvar standard-input  ar-input-port nil)
+(ar-defvar standard-output ar-output-port nil)
+(ar-defvar standard-output ar-error-port nil)
+(ar-defvar default-directory ar-current-directory nil)
 
 (defun ar-flush-output ()
   nil)
 
-(scm-def 'flush-output #'ar-flush-output)
+(scheme-def flush-output #'ar-flush-output)
 
-(scm-def 'current-input-port ar-input-port)
-(scm-def 'current-output-port ar-output-port)
-(scm-def 'current-error-port ar-error-port)
+(scheme-def current-input-port ar-input-port)
+(scheme-def current-output-port ar-output-port)
+(scheme-def current-error-port ar-error-port)
+(scheme-def current-directory ar-current-directory)
 
 (defun ar-string (&rest args)
   (apply #'string
@@ -593,14 +789,14 @@
                    (if (stringp x) (string-to-char x) x))
                  args)))
 
-(scm-def 'string #'ar-string)
-(scm-def 'display (scm-ref 'princ))
-(scm-def 'newline (scm-ref 'terpri))
-(scm-def 'read #'ar-read)
-(scm-def 'write (scm-ref 'prin1))
+(scheme-def string #'ar-string)
+(scheme-def display (scm-ref 'princ))
+(scheme-def newline (scm-ref 'terpri))
+(scheme-def read #'ar-read)
+(scheme-def write (scm-ref 'prin1))
 
-(defun scm-read-byte (port &optional eof)
-  (cond ((functionp port) (funcall port))
+(defun scm-peek-byte (port &optional eof)
+  (cond ((functionp port) (let ((b (funcall port))) (funcall port b) b))
         ((bufferp port)
           (with-current-buffer port
             (if (>= (point) (point-max))
@@ -608,12 +804,30 @@
                 (char-after (point)))))
         (t (error (format "Don't know how to read byte from %S" port)))))
 
-(scm-def 'read-byte #'scm-read-byte)
+(defun scm-read-byte (port &optional eof)
+  (cond ((functionp port) (funcall port))
+        ((bufferp port)
+          (with-current-buffer port
+            (if (>= (point) (point-max))
+                eof
+                (prog1 (char-after (point)) (forward-char 1)))))
+        (t (error (format "Don't know how to read byte from %S" port)))))
+
+(scheme-def peek-byte #'scm-peek-byte)
+(scheme-def read-byte #'scm-read-byte)
+
+(defun scm-peek-char (port &optional eof)
+  (let ((b (scm-peek-byte port eof)))
+    (if (eq b eof) b
+      (if (characterp b) (string b) b))))
 
 (defun scm-read-char (port &optional eof)
-  (scm-read-byte port eof))
+  (let ((b (scm-read-byte port eof)))
+    (if (eq b eof) b
+      (if (characterp b) (string b) b))))
 
-(scm-def 'read-char #'scm-read-char)
+(scheme-def peek-char #'scm-peek-char)
+(scheme-def read-char #'scm-read-char)
 
 (ac-def 'emacs* t)
 ;; (ac-def 'writec (scm-ref 'write-char))
@@ -629,21 +843,37 @@
         (lambda (x &optional port)
           (funcall (scm-ref 'princ) (format "%s" x) port)))
         
+(defun scm-output-string-p (x)
+  (and (bufferp x)
+       (string-match-p " \\*string-output\\*" (buffer-name x))))
+
+(defun scm-unset-process-buffers (buffer)
+  (while (get-buffer-process buffer)
+    (set-process-buffer (get-buffer-process buffer) nil)))
+
+(defun scm-inside (buffer)
+  (if (functionp buffer)
+      (funcall buffer :string)
+    (if (scm-output-string-p buffer)
+        ; for string output buffers, return the entire buffer string and then
+        ; kill the buffer.
+        (prog1 (with-current-buffer buffer (buffer-string))
+               (scm-unset-process-buffers buffer)
+               (kill-buffer buffer))
+      (with-current-buffer buffer
+        (buffer-substring (point) (point-max))))))
+
 (ac-def 'stderr (lambda () 'nil))
-(ac-def 'inside (lambda (buffer)
-      (if (functionp buffer)
-          (funcall buffer :string)
-        (with-current-buffer buffer
-          (buffer-string)))))
+(ac-def 'inside #'scm-inside)
 
-(scm-def 'eval #'scheme-eval)
-(scm-def '%eval #'elisp-eval)
+(scheme-def eval #'scheme-eval)
+(scheme-def %eval #'elisp-eval)
 
-(scm-def 'string-replace! nil)
+(scheme-def string-replace! nil)
 
-(scm-def 'ar-tmpname nil)
+(scheme-def ar-tmpname nil)
 
-(scm-def 'setuid nil)
+(scheme-def setuid (uid) nil)
 
 (defun ar-current-seconds ()
   (truncate (time-to-seconds (current-time))))
@@ -651,37 +881,35 @@
 (defun ar-current-milliseconds ()
   (truncate (* 1000 (float-time))))
 
-(scm-def 'current-milliseconds #'ar-current-milliseconds)
-(scm-def 'current-process-milliseconds #'ar-current-milliseconds)
-(scm-def 'current-gc-milliseconds #'ar-current-milliseconds)
-(scm-def 'current-seconds #'ar-current-seconds)
+(scheme-def current-milliseconds #'ar-current-milliseconds)
+(scheme-def current-process-milliseconds #'ar-current-milliseconds)
+(scheme-def current-gc-milliseconds #'ar-current-milliseconds)
+(scheme-def current-seconds #'ar-current-seconds)
 
-(scm-def 'error
-  (lambda (msg &rest xs)
-    (if xs
-	(error (apply 'format `("Error: %s %S" ,msg ,@xs)))
-      (error (format "Error: %s" msg)))))
+(scheme-def error (msg &rest xs)
+  (if xs
+    (error (apply 'format `("Error: %s %S" ,msg ,@xs)))
+    (error (format "Error: %s" msg))))
 
-(scm-def 'namespace-set-variable-value!
-  (lambda (name val)
-    (set name (fset name val))))
+(scheme-def namespace-set-variable-value!  (name val)
+  (set name (fset name val)))
 
-(scm-def 'namespace-variable-value
-  (lambda (name &optional _use-mapping? _failure-thunk)
-    ;; todo
-    (cond ((eq name '_that) (setq name (ac-global-name 'that)))
-	  ((eq name '_thatexpr) (setq name (ac-global-name 'thatexpr))))
-    (scm-ref name)))
+(scheme-def namespace-variable-value (name &optional _use-mapping? failure-thunk)
+  ;; todo
+  (cond ((eq name '_that) (setq name (ac-global-name 'that)))
+        ((eq name '_thatexpr) (setq name (ac-global-name 'thatexpr))))
+  (let ((fail (list 'fail)))
+    (let ((result (scm-ref name fail)))
+      (if (eq result fail) (funcall failure-thunk) result))))
 
-(scm-def 'protect
-  (lambda (during after)
-    (unwind-protect (funcall during) (funcall after))))
+(scheme-def protect (during after)
+  (unwind-protect (funcall during) (funcall after)))
 
-(scm-def 'make-hash-table (lambda (test) (make-hash-table :test test))) 
+(scheme-def make-hash-table (test) (make-hash-table :test test)) 
 
-(scm-def 'make-semaphore (lambda (_n) nil))
+(scheme-def make-semaphore (_n) nil)
 
-(scm-def 'make-thread-cell (lambda (_x) nil))
+(scheme-def make-thread-cell (_x) nil)
 
 (ac-def '/ (lambda (x y) (/ x (float y))))
 
@@ -704,52 +932,65 @@
 (ac-def 'newstring (lambda (n &optional c)
 		     (make-string n (or (if (stringp c) (string-to-char c) c) ?\0))))
 
-(scm-def 'exn-message (scm-ref 'error-message-string))
+(scheme-def exn-message (scm-ref 'error-message-string))
 
-(scm-def 'disp-to-string
-  (lambda (x)
-    (format "%S" x)))
+(scheme-def disp-to-string (x)
+  (format "%S" x))
 
-(scm-def 'on-err
-  (lambda (errfn f)
-    (condition-case c
-	(funcall f)
-      (error (funcall errfn c)))))
+(scheme-def on-err (errfn f)
+  (condition-case c
+      (funcall f)
+    (error (funcall errfn c))))
 
-(scm-def 'sleep
-  (lambda (seconds)
-    (sit-for seconds)))
+(scheme-def sleep (seconds)
+  (sit-for seconds))
 
 (defun ar-directory-list (path)
   (cddr (directory-files path))) ; cddr skips "." and ".."
 
 
-(scm-def 'path->string (lambda (x) x))
-(scm-def 'directory-list #'ar-directory-list)
-(scm-def 'file-exists? (scm-ref 'file-exists-p))
-(scm-def 'directory-exists? (scm-ref 'file-accessible-directory-p))
-(scm-def 'delete-file (scm-ref 'delete-file))
-(scm-def 'substring (scm-ref 'substring))
+(scheme-def path->string (x) x)
+(scheme-def path-only (x) (file-name-directory x))
+(scheme-def path->complete-path (path &optional base) (expand-file-name path base))
+
+(defconst ar-orig-dir (file-name-as-directory (getenv "PWD"))) ; TODO: cross platform concern
+
+(scheme-def find-system-path (kind)
+  (cond ((eq kind 'home-dir) (expand-file-name "~"))
+        ((eq kind 'orig-dir) ar-orig-dir)
+        ((eq kind 'run-file) (cadr (member "-l" command-line-args)))
+        (#t (error (format "find-system-path not yet implemented for %s" kind)))))
+
+(scheme-def directory-list #'ar-directory-list)
+(scheme-def file-exists? (scm-ref 'file-exists-p))
+(scheme-def directory-exists? (scm-ref 'file-accessible-directory-p))
+(scheme-def delete-file (scm-ref 'delete-file))
+(scheme-def substring (scm-ref 'substring))
 ; (let ((time (current-time)))
-;   (scm-def 'current-milliseconds (lambda () (* 1000.0 (float-time (time-since time))))))
+;   (scheme-def current-milliseconds () (* 1000.0 (float-time (time-since time)))))
 
 (defun ar-system (cmd)
   (let ((s (shell-command-to-string cmd)))
     (princ s)
     nil))
 
-(scm-def 'system #'ar-system)
+(scheme-def system #'ar-system)
 
-(scm-def 'char->ascii #'char-to-string)
-(scm-def 'ascii->char #'string-to-char)
+(scheme-def char->ascii #'char-to-string)
+(scheme-def ascii->char #'string-to-char)
 
-(scm-def 'seconds->date #'decode-time)
-(scm-def 'date-second (lambda (l) (nth 0 l)))
-(scm-def 'date-minute (lambda (l) (nth 1 l)))
-(scm-def 'date-hour (lambda (l) (nth 2 l)))
-(scm-def 'date-day (lambda (l) (nth 3 l)))
-(scm-def 'date-month (lambda (l) (nth 4 l)))
-(scm-def 'date-year (lambda (l) (nth 5 l)))
+(scheme-def seconds->date #'decode-time)
+(scheme-def date-second (l) (nth 0 l))
+(scheme-def date-minute (l) (nth 1 l))
+(scheme-def date-hour (l) (nth 2 l))
+(scheme-def date-day (l) (nth 3 l))
+(scheme-def date-month (l) (nth 4 l))
+(scheme-def date-year (l) (nth 5 l))
+
+(scheme-def getenv #'getenv)
+(scheme-def putenv #'setenv)
+
+(scheme-def sha1 (port) (secure-hash 'sha1 (ar-get-output-string port)))
 
 
 (defconst scheme-expressions '
@@ -798,10 +1039,16 @@
 
 (define (id-literal? x) (and (symbol? x) (eqv? #\| (string-ref (symbol->string x) 0))))
 
+(define ar-nil '())
+(define ar-t #t)
+
+(define (ar-nil? x)
+  (eqv? x ar-nil))
+
 (define atstrings #f)
 
 (define (ac-string s env)
-  (if atstrings
+  (if (and atstrings (> (string-length s) 1))
       (if (atpos s 0)
           (ac (cons 'string (map (lambda (x)
                                    (if (string? x)
@@ -812,19 +1059,26 @@
           (unescape-ats s))
       (string-copy s)))          ; avoid immutable strings
 
+(define (keywordp x)
+  (and (symbol? x)
+       (let ((s (symbol->string x)))
+         (and (> (string-length s) 0)
+              (eq? (string-ref s 0) #\:)))))
+
 (define (literal? x)
   (or (boolean? x)
       (char? x)
       (string? x)
       (number? x)
       (id-literal? x)
-      (eq? x '())))
+      (ar-nil? x)
+      (keywordp x)))
 
 (define (ssyntax? x)
   (and (symbol? x)
        (not (or (eqv? x '+) (eqv? x '++) (eqv? x '_)))
        (let ((name (symbol->string x)))
-         (has-ssyntax-char? name (- (string-length name) 1)))))
+         (has-ssyntax-char? name (- (string-length name) 2)))))
 
 (define (has-ssyntax-char? string i)
   (and (>= i 0)
@@ -850,9 +1104,9 @@
 ; (complement (andf foo bar)).
 
 (define (expand-ssyntax sym)
-  ((cond ((or (insym? #\: sym) (insym? #\~ sym)) expand-compose)
+  ((cond ((insym? #\& sym) expand-and)
+         ((or (insym? #\: sym) (insym? #\~ sym)) expand-compose)
          ((or (insym? #\. sym) (insym? #\! sym)) expand-sexpr)
-         ((insym? #\& sym) expand-and)
      ;   ((insym? #\_ sym) expand-curry)
          (#t (error "Unknown ssyntax" sym)))
    sym))
@@ -943,7 +1197,7 @@
                        (err "Bad ssyntax" orig)
                        (chars->value (car toks))))))))
 
-(define (insym? char sym) (member char (symbol->chars sym)))
+(define (insym? char sym) (member char (cdr (reverse (symbol->chars sym)))))
 
 (define (symbol->chars x) (string->list (symbol->string x)))
 
@@ -973,12 +1227,30 @@
                  keepsep?))))
 
 (define (ac-global-name s)
-  (string->symbol (string-append "_" (symbol->string s))))
+  (string->symbol (string-append (if (ac-reserved? s) "_" "") (symbol->string s))))
 
 (define (ac-var-ref s env)
   (if (lex? s env)
       s
       (ac-global-name s)))
+
+(define (ac-quoted x)
+  (cond ((pair? x)
+         (imap (lambda (x) (ac-quoted x)) x))
+        ((eqv? x 'nil)
+         ar-nil)
+        ((eqv? x 't)
+         ar-t)
+        (#t x)))
+
+(define (ac-unquoted x)
+  (cond ((pair? x)
+         (imap (lambda (x) (ac-unquoted x)) x))
+        ((ar-nil? x)
+         'nil)
+        ((eqv? x ar-t)
+         't)
+        (#t x)))
 
 ; quasiquote
 
@@ -1215,7 +1487,10 @@
           ((and (pair? fn) (eqv? (car fn) 'fn))
            `(,(ac fn env) ,@(ac-args (cadr fn) args env)))
           ((and direct-calls (symbol? fn) (not (lex? fn env)) (bound? fn)
-                (procedure? (namespace-variable-value (ac-global-name fn))))
+                (eq? (ar-type (bound? fn)) 'fn)
+                ;(procedure? (namespace-variable-value (ac-global-name fn)))
+                )
+           ;(print `(ac-call ,fn ,args))
            (ac-global-call fn args env))
           ; ((= (length args) 0)
           ;  `(ar-funcall0 ,(ac fn env) ,@(map (lambda (x) (ac x env)) args)))
@@ -1282,6 +1557,39 @@
   (if (eq? x 'nil)
       '()
       (ac-denil x)))
+
+; is v a reserved word?
+
+(define ac-reserved '(
+  do lambda let let* and or if cond when unless 
+  while for loop case
+  define define-syntax define-values
+  begin begin-for-syntax
+  + - / *
+  < <= = == >= > 
+  #t #f true false t nil
+  car cdr caar cadr cddr caaar caadr cadar caddr cdaar cdadr cddar cdddr
+  lib require provide module load eof read write eval
+  length empty last keep set max min fill-table abs round count
+  eq eqv equal eq? eqv? equal?
+  cons list member assoc compose all map string thread
+  tag link only any nor private public
+  sort close error with-handlers
+  date tokens
+  place place* place/context place-kill
+
+
+  stdin stdout stderr rand trunc type rep sleep system rand dir load-path
+  trunc exact msec dead quit log exp expt apply annotate sref
+  make-hash-table
+  point throw catch condition-case unwind-protect ignore
+  acons atom some find nthcdr warn repeat push pop adjoin pushnew prn merge
+  union reduce point downcase upcase mismatch get subst concat
+  getenv setenv putenv readenv
+  
+))
+
+(define (ac-reserved? v) (member v ac-reserved))
 
 ; is v lexically bound?
 
@@ -1352,6 +1660,10 @@
   b)
 
 (xdef sig fn-signatures)
+
+(xdef quoted ac-quoted)
+
+(xdef unquoted ac-unquoted)
 
 ; versions of car and cdr for parsing arguments for optional
 ; parameters, that yield nil for nil. maybe we should use
@@ -1504,6 +1816,7 @@
 
 (define (ar-is2 a b)
   (tnil (or (eqv? a b)
+            (and (number? a) (number? b) (= a b))
             (and (string? a) (string? b) (string=? a b))
             (and (ar-false? a) (ar-false? b)))))
 
@@ -1514,6 +1827,8 @@
 (xdef err err)
 (xdef nil 'nil)
 (xdef t   't)
+(xdef false #f)
+(xdef true  #t)
 
 (define (all test seq)
   (or (null? seq) 
@@ -1620,13 +1935,17 @@
 
 (define ar-gensym-count 0)
 
-(define (ar-gensym)
+(define (ar-gensym . prefix)
   (set! ar-gensym-count (+ ar-gensym-count 1))
-  (string->symbol (string-append "gs" (number->string ar-gensym-count))))
+  (string->symbol (string-append (if (null? prefix) "gs" (symbol->string (car prefix))) (number->string ar-gensym-count))))
 
 (xdef uniq ar-gensym)
 
 (xdef ccc call-with-current-continuation)
+
+(xdef call/ec call-with-escape-continuation)
+
+(xdef modtime file-or-directory-modify-seconds)
 
 (xdef infile  (lambda (f)
                 (open-input-file f)))
@@ -1649,9 +1968,17 @@
 (xdef stdin  current-input-port) 
 (xdef stderr current-error-port)
 
+(xdef call-w/param
+      (lambda (var val thunk)
+        (parameterize ((var val)) (thunk))))
+
 (xdef call-w/stdout
       (lambda (port thunk)
         (parameterize ((current-output-port port)) (thunk))))
+
+(xdef call-w/stderr
+      (lambda (port thunk)
+        (parameterize ((current-error-port port)) (thunk))))
 
 (xdef call-w/stdin
       (lambda (port thunk)
@@ -1672,6 +1999,12 @@
 
 (xdef peekc (lambda str 
               (let ((c (peek-char (if (pair? str)
+                                      (car str)
+                                      (current-input-port)))))
+                (if (eof-object? c) 'nil c))))
+
+(xdef peekb (lambda str 
+              (let ((c (peek-byte (if (pair? str)
                                       (car str)
                                       (current-input-port)))))
                 (if (eof-object? c) 'nil c))))
@@ -1709,6 +2042,10 @@
 (xdef sread (lambda (p eof)
                (let ((expr (read p)))
                  (if (eof-object? expr) eof expr))))
+
+(xdef sdata (lambda (p eof)
+               (let ((expr (read p)))
+                 (if (eof-object? expr) eof (ac-quoted expr)))))
 
 ; these work in PLT but not scheme48
 
@@ -1879,6 +2216,7 @@
 ; tle kept as a way to get a break loop when a scheme err
 
 (define (arc-eval expr) 
+  ;(print `(arc-eval ,expr))
   (eval (ac expr '())))
 
 (define (tle)
@@ -1913,6 +2251,21 @@
               (namespace-set-variable-value! (ac-global-name 'thatexpr) expr)
               (newline)
               (tl2)))))))
+
+(define (cwd)
+  (path->string (find-system-path 'orig-dir)))
+
+(define-syntax-rule (get-here)
+  (begin 
+    (let ((ccr (current-contract-region)))
+      (let-values (((here-dir here-name ignored) (split-path ccr)))
+        (build-path here-dir here-name)))))
+
+(define ac-load-path
+  (list (path->string (path-only (path->complete-path (find-system-path 'run-file))))
+        (cwd)))
+
+(xdef load-path ac-load-path)
 
 (define (aload1 p)
   (let ((x (read p)))
@@ -1970,6 +2323,7 @@
 (xdef macex1 (lambda (e) (ac-macex (ac-denil e) 'once)))
 
 (xdef eval (lambda (e)
+              ;(print `(eval ,e))
               (eval (ac (ac-denil e) '()))))
 (xdef seval eval)
 
@@ -2198,6 +2552,9 @@
                     ((explicit-flush) (set! explicit-flush flag)))
                   (car val)))))
 
+(xdef get-environment-variable getenv)
+(xdef set-environment-variable putenv)
+
 (putenv "TZ" ":GMT")
 
 (define (gmt-date sec) (seconds->date sec))
@@ -2257,6 +2614,10 @@
 (define (unescape-ats s)
   (list->string (unesc (string->list s))))
 
+
+(xdef make-param make-parameter)
+
+
 ))
 
 ;; (eval-and-compile
@@ -2288,6 +2649,7 @@
 (def cddr (xs) (cdr (cdr xs)))
 
 (def no (x) (is x nil))
+(def yes (x) (if x true false))
 
 (def acons (x) (is (type x) 'cons))
 
@@ -2386,7 +2748,7 @@
 ; Composes in functional position are transformed away by ac.
 
 (mac compose args
-  (let g (uniq)
+  (let g (uniq 'compose)
     `(fn ,g
        ,((afn (fs)
            (if (cdr fs)
@@ -2397,7 +2759,7 @@
 ; Ditto: complement in functional position optimized by ac.
 
 (mac complement (f)
-  (let g (uniq)
+  (let g (uniq 'complement)
     `(fn ,g (no (apply ,f ,g)))))
 
 (if emacs* (def rev (xs) (|reverse| xs))
@@ -2414,10 +2776,10 @@
 
 (mac w/uniq (names . body)
   (if (acons names)
-      `(with ,(apply + nil (map1 (fn (n) (list n '(uniq)))
+      `(with ,(apply + nil (map1 (fn (n) (list n `(uniq ',n)))
                              names))
          ,@body)
-      `(let ,names (uniq) ,@body)))
+      `(let ,names (uniq ',names) ,@body)))
 
 (mac or args
   (and args
@@ -3068,22 +3430,28 @@
   `(let ,var (outfile ,name 'append)
      (after (do ,@body) (close ,var))))
 
+(mac w/param (var val . body)
+  `(call-w/param ,var ,val (fn () ,@body)))
+
 ; rename this simply "to"?  - prob not; rarely use
 
 (mac w/stdout (str . body)
   `(call-w/stdout ,str (fn () ,@body)))
 
+(mac w/stderr (str . body)
+  `(call-w/stderr ,str (fn () ,@body)))
+
 (mac w/stdin (str . body)
   `(call-w/stdin ,str (fn () ,@body)))
 
-(if emacs*
-    (mac tostring body
-      `(|with-output-to-string| ,@body))
+;(if emacs*
+;    (mac tostring body
+;      `(|with-output-to-string| ,@body))
 (mac tostring body
   (w/uniq gv
     `(w/outstring ,gv
        (w/stdout ,gv ,@body)
-       (inside ,gv)))))
+       (inside ,gv))))
 
 (mac fromstring (str . body)
   (w/uniq gv
@@ -3886,10 +4254,16 @@
           ,@(map [list _ g] fs)))
       ,x)))
 
-(mac or= (place expr)
-  (let (binds val setter) (setforms place)
-    `(atwiths ,binds
-       (or ,val (,setter ,expr)))))
+(mac or= args
+  `(do ,@(map [cons 'or-assign _] (pair args))))
+
+(mac or-assign (slot value)
+  `(atomic
+     ,(if (ssyntax slot)
+          `(or-assign ,(ssexpand slot) ,value)
+          (alist slot)
+          `(or ,slot (= ,slot ,value))
+        `(or (if (bound ',slot) ,slot) (= ,slot ,value)))))
 
 (= hooks* (table))
 
@@ -3899,7 +4273,7 @@
 (mac defhook (name . rest)
   `(= (hooks* ',name) (fn ,@rest)))
   
-(mac out (expr) `(pr ,(tostring (eval expr))))
+(mac prout (expr) `(pr ,(tostring (eval expr))))
 
 ; if renamed this would be more natural for (map [_ user] pagefns*)
 
@@ -7203,8 +7577,8 @@ function vote(node) {
           onclick (if user "return vote(this)")
           href    (vote-url user i dir whence))
     (if (is dir 'up)
-        (out (gentag img src up-url*   border 0 vspace 3 hspace 2))
-        (out (gentag img src down-url* border 0 vspace 3 hspace 2)))))
+        (prout (gentag img src up-url*   border 0 vspace 3 hspace 2))
+        (prout (gentag img src down-url* border 0 vspace 3 hspace 2)))))
 
 (def vote-url (user i dir whence)
   (+ "vote?" "for=" i!id
@@ -8812,8 +9186,8 @@ If you're in a scratch buffer, you can run (setq-local lexical-binding t)
      ,@(mapcar 'scheme-expand body)))
 
 (progn
-  (setq max-lisp-eval-depth (* 1335 10))
-  (setq max-specpdl-size (* 1335 10))
+  (setq max-lisp-eval-depth (* 1335 100))
+  (setq max-specpdl-size (* 1335 100))
   (scheme-eval scheme-expressions)
   (mapc 'arc-eval arc-expressions))
 

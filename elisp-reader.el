@@ -193,12 +193,15 @@ the position of the stream."
                           ((eq ch :pos) (point))
                           ((eq ch :end) (point-max))
                           ((eq ch :string) (buffer-string))
-                          (ch (push ch unget))
-                          (unget (pop unget))
+                          ;(ch (push ch unget))
+                          ;(unget (pop unget))
+			  (ch (save-excursion (insert-char ch)))
                           (t
                            (when (not (eobp))
                              (prog1 (char-after)
-                               (forward-char 1))))))))
+                               ;(forward-char 1)
+			       (delete-char 1)
+			       )))))))
       ((markerp in) (lambda (&optional ch)
                       (with-current-buffer (marker-buffer in)
                         (cond
@@ -266,10 +269,12 @@ true."
 (defun er-croak (msg &rest args)
   "Error out in case of parse error."
   (signal 'scan-error (cons msg args)))
-  ;; ;; TODO: throw a scan-error.
-  ;; (if args
-  ;;     (apply #'error msg args)
-  ;;   (error "%s" msg)))
+
+(defun er-eof (msg in)
+  "Signal that we've reached the end of input."
+  (if (string-equal msg "End of file during parsing")
+      (signal 'end-of-file in)
+    (signal 'scan-error (cons msg in))))
 
 (defun er-read-string ()
   "Read a string from the current stream.  It defers to
@@ -312,7 +317,7 @@ would be correct)."
                       (cond
                         ((eq ch ?\\)
                          (er-next in)
-                         (if (er-peek in) t (er-croak "Unterminated input")))
+                         (if (er-peek in) t (er-eof "Unterminated input" in)))
                         (t
                          (or (er-letter? ch)
                              (er-digit? ch)
@@ -411,7 +416,7 @@ character is encountered this will produce an error."
         (setq ch (er-peek in))
         (cond
           ((not ch)
-           (er-croak "Unterminated list"))
+           (er-eof "Unterminated list" in))
           ((eq ch end)
            (er-next in)
            (throw 'exit ret))
@@ -442,7 +447,7 @@ character is encountered this will produce an error."
   (let ((ch (er-peek in)) macrochar)
     (cond
       ((not ch)
-       (er-croak "End of file during parsing"))
+       (er-eof "End of file during parsing" in))
       ((eq ch ?\;)
        (er-skip-comment in)
        (er-read-datum in))
@@ -642,7 +647,7 @@ character is encountered this will produce an error."
             ((eq ch ?/)
              (throw 'exit nil))
             ((not ch)
-             (er-croak "Unterminated regexp"))
+             (er-eof "Unterminated regexp" in))
             (t
              (push ch ret))))))
     (apply #'string (nreverse ret))))
@@ -720,7 +725,7 @@ during byte compilation."
     (setq *er-orig-load-read-function* load-read-function)
     (setq load-read-function (symbol-function 'er-read))
     (fset 'read-from-string (symbol-function 'er-read-from-string))
-    (fset 'read-from-minibuffer (symbol-function 'er-read-from-minibuffer))
+    ;(fset 'read-from-minibuffer (symbol-function 'er-read-from-minibuffer))
     (fset 'read (symbol-function 'er-read))
     (setq *er-mode* t))
   (er-current-read-functions))
