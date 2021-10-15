@@ -1018,6 +1018,7 @@
         ((eqv? s 'nil) (list 'quote 'nil))
         ((ssyntax? s) (ac (expand-ssyntax s) env))
         ((symbol? s) (ac-var-ref s env))
+        ((eq? (xcar s) 'lexenv) (ac-lenv (cdr s) env))
         ((ssyntax? (xcar s)) (ac (cons (expand-ssyntax (car s)) (cdr s)) env))
 	((id-literal? (xcar s)) `(,(car s) ,@(map (lambda (x) (ac x env)) (cdr s))))
         ((eq? (xcar s) 'quote) (list 'quote (ac-niltree (cadr s))))
@@ -1450,6 +1451,26 @@
             (ac-args (if (pair? names) (cdr names) '())
                      (cdr exprs)
                      env))))
+
+(define (ac-lexname env)
+  (let ((name (ac-dbname env)))
+    (if (eqv? name #f)
+        'fn
+        (apply string-append
+               (map (lambda (x) (string-append (symbol->string x) "-"))
+                    (apply append (keep pair? env)))))))
+
+(define (ac-lenv args env)
+  (ac-lexenv (ac-lexname env) env))
+
+(define (ac-lexenv name env)
+  `(list (list '*name ',name)
+         ,@(imap (lambda (var)
+                   (let ((val (ar-gensym)))
+                     `(list ',var
+                            (lambda ,val ,var)
+                            (lambda (,val) (set! ,var ,val)))))
+                 (keep (lambda (x) (not (or (ar-false? x) (pair? x)))) env))))
 
 ; generate special fast code for ordinary two-operand
 ; calls to the following functions. this is to avoid
